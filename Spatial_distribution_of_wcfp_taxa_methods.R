@@ -1,17 +1,11 @@
-# Species Distribution (in countries)
-
-# Aim:
-#
-# * 1. Be able to recognize how many food plant species are in any given
-#      country, and which food plant species those are. 
-#      Food plants = WCFP 2026
-
-#      To do later (include CWR): Food plants = WCFP + CWR
-
-
-# * 2. Be able to perform these counts/queries for any given list of food plants
-
-
+# Project: GCCFP:Species Distribution (in countries, L3, L4)
+# Main workflow
+# Aims (2)                                                                           #
+#     * 1. Be able to recognize how many food plant species are in any given         #
+#          country, and which food plant species those are.                          #
+#          Food plants = WCFP 2026                                                   #
+#           (To do later (include CWR): Food plants = WCFP + CWR)                    #
+# *    2. Be able to perform these counts/queries for any given list of food plants  #
 
 
 ## ------------------------------------------------------------------------------ ##
@@ -34,38 +28,6 @@
 #    (raw occurrence points), Method 2 (GRIN Taxonomy distributions), the
 #    3-source "combined method" synthesis (>=2 of 3 sources), the static
 #    ggplot country-level richness map, and the interactive leaflet map.
-
-## ------------------------------------------------------------------------------ ##
-# TODO / Next steps:
-#
-# 1. Check how the WCFP paper's own code (in
-#    WCFP_2026_data-and-code_figshare_repo) aligns taxon names from its raw
-#    input data, for reproducibility - i.e. confirm our Method 3 name/ID
-#    matching (wcfp_plantlist$LSID_accepted -> wcvp_names$ipni_id ->
-#    plant_name_id) follows the same logic the paper's own scripts use, not
-#    just the same input files.
-#
-# 2. Produce alternate versions of the maps (static ggplot + interactive
-#    leaflet) at TDWG level 3 area resolution instead of country level -
-#    same combined-method (>=2 of 3 sources) logic, but keyed on
-#    area_code_l3/area rather than country/admin.
-#
-# 3. Check that this workflow reproduces the same per-taxon counts and
-#    results as the WCFP paper's own code (data_summaries.R) - i.e.
-#    validate wcvp_dist_tdwg3 / wcvp_distinct_taxa_by_tdwg3 against the
-#    paper's own richness/distribution outputs for the same species list.
-#
-# 4. Once checks 1-3 are complete, switch Method 3 to read the paper's own
-#    precomputed distribution file directly instead of re-deriving it via
-#    the wcvp_names/wcvp_distribution join:
-#      WCFP_distribution_native_introduced <- read_csv("D:/GCCFP_species_distribution_countries/WCFP_2026_data-and-code_figshare_repo/WCFP_distribution_native_introduced.csv")
-#
-# 5. Create a generalized version of this workflow that accepts any
-#    user-supplied plantlist (not just wcfp_plantlist) and returns each
-#    species' distribution per country (and alternatively per TDWG level
-#    3 area), using the same 3 filter methods and input data sources as
-#    this workflow (occurrences, GRIN Global, WCFP/WCVP) - output: a list
-#    of species per country based on those 3 methods.
 ## ------------------------------------------------------------------------------ ##
 
 
