@@ -1,0 +1,838 @@
+﻿================================================================================
+NOTES ON THE WCFP SPATIAL DISTRIBUTION WORKFLOW
+Issues found, fixes applied, and outstanding data-quality caveats
+================================================================================
+
+Script    : claude_remote/Spatial_distribution_of_wcfp_taxa_methods.R
+Started   : 2026-09-08
+Updated   : 2026-09-12  (Part 10 = Red List maps; Part 1 item 5 = temp dir)
+
+Environment for the successful runs:
+  R 4.5.3 | sf linked to GEOS 3.14.1, GDAL 3.12.1, PROJ 9.7.1
+  Windows 11, 15.7 GB RAM, locale English_United States.utf8 (codepage 65001)
+
+  Launch with:
+    Start-Process Rscript.exe --encoding=UTF-8 <script>
+        -RedirectStandardOutput workflow_run.log
+        -RedirectStandardError  workflow_run.err
+  Do NOT set $ErrorActionPreference = "Stop" around it, and do not use
+  PowerShell's combined `*>` redirect - see Part 1 item 4.
+
+
+================================================================================
+PART 0 - WHAT THE WORKFLOW IS FOR, AND WHAT IS ORIGINAL TO IT
+================================================================================
+Carried over from the header comments of the script itself, so that the aim,
+the provenance and the known issues sit in one document. The script header
+remains the master copy; if the two ever disagree, the script wins.
+
+AIM
+  1. Recognise how many food plant species occur in any given country, and
+     which species those are.  Food plants = WCFP 2026.
+     (Later extension: WCFP + CWR.)
+  2. Be able to run the same counts and queries against any supplied list of
+     food plants, not only the WCFP list.
+
+METHOD
+  Three independent methods, then a combined method that accepts a
+  (species, place) pair when 2 or more of the 3 sources agree.
+    Method 1  raw occurrence points
+    Method 2  GRIN-Global Taxonomy distributions
+    Method 3  WCVP / TDWG level 3 distributions
+
+  The >=2-of-3 rule is what makes several of the coarse-resolution
+  compromises in Part 3 tolerable - see open issue H, which is the one place
+  where it does not fully protect the result.
+
+PROVENANCE - FROM THE PAPER vs CUSTOM TO THIS SCRIPT
+  From the WCFP 2026 paper's own data-and-code archive
+  (https://doi.org/10.6084/m9.figshare.31441615.v2):
+    - Method 3 reproduces data_summaries.R section 8, "NATIVE / INTRODUCED
+      FLAG": the join wcfp_plantlist -> WCVP plant_name_id -> WCVP
+      distribution table, using the same wcvp_names.csv / wcvp_distribution.csv
+      snapshot files the paper ships and the same native / introduced /
+      extinct / doubtful classification.
+    - The rule of counting all occurrence_status values rather than native
+      only, for richness counts, mirrors the paper's section 9a.
+
+  Custom to this script, NOT from the paper:
+    - Method 1 (raw occurrence points)
+    - Method 2 (GRIN Taxonomy distributions)
+    - the 3-source combined synthesis (>=2 of 3)
+    - the static ggplot country-level richness map
+    - the interactive leaflet maps
+
+  This distinction matters for the write-up: only Method 3 can be described as
+  reproducing published methodology. Everything else needs its own
+  justification, and the geography decisions in Part 3 are all on the custom
+  side.
+
+  Note that the native / non-native scheme described in Part 2 now sits ON TOP
+  of the paper's four-way classification - the paper's categories are still
+  computed, then collapsed. The original values are not lost.
+
+
+================================================================================
+PART 1 - BLOCKING FAILURES, ALL FIXED
+       (items 1-4 are code/tooling; item 5 is the operating system)
+================================================================================
+
+1. saveWidget() required pandoc, which is not on PATH               [FIXED]
+   "Saving a widget with selfcontained = TRUE requires pandoc". Superseded by
+   item 3: the script no longer invokes pandoc anywhere and runs under a plain
+   Rscript with no environment setup.
+
+2. level4.geojson fails sf's spherical-geometry (s2) check          [FIXED]
+   "Loop 24 edge 0 crosses loop 31 edge 46" on the L4 occurrence join. Three of
+   610 features are s2-invalid: FIN-OO, MAG-OO, NUN-OO. Neither st_make_valid()
+   nor s2::s2_rebuild(check = FALSE) repairs them (both tested; 2-3 features
+   still invalid and the join still fails).
+
+   Fix: run that ONE join in planar mode, restoring the previous setting
+   immediately (.s2_was_on). Planar is safe here - point-in-polygon against
+   densely-vertexed polygons - and the four features whose bounding box spans
+   360 deg (Antarctica, Fiji, Magadan, Aleutian Is.) are multipolygons with
+   parts either side of +/-180, not polygons wrapping across it. Confirmed
+   because none of them appear among multi-area point assignments.
+   st_wrap_dateline() was tested and correctly changed nothing; st_make_valid()
+   made no difference to the join (38,984 matches either way) so was NOT added.
+
+3. pandoc ran out of memory on the large maps                       [FIXED]
+   Error 251, "osCommitMemory ... the paging file is too small". The L4 map
+   embeds ~460k rows, so its raw HTML is >130 MB and pandoc parses the whole
+   document into memory.
+
+   Key observation: the widget's DEPENDENCIES are only ~1 MB. Fix:
+   save_widget_selfcontained() writes with selfcontained = FALSE, then splices
+   each <script src>/<link href> back in inline, base64-encoding url() assets.
+   Only the short <head> lines are rewritten; the huge payload line passes
+   straight through, keeping memory flat.
+
+   Bug caught in testing before it reached a run: leaflet.css contains the
+   legacy IE hack url(#default#VML), which strips to an empty path and resolved
+   to the lib DIRECTORY (file.exists() is TRUE for directories). The helper now
+   skips fragment-only/empty refs and requires a regular file.
+
+4. R silently killed ~25 s in, no error, no outputs                 [FIXED]
+   Log stopped at exactly 1626 bytes (end of package loading), no R process, no
+   error, no outputs. NOT memory (6.7 GB free).
+
+   Cause: launching R inside the tooling's background-task wrapper meant the R
+   child was torn down with the task. A related failure ran the opposite way:
+   with $ErrorActionPreference = "Stop", PowerShell 5.1 treats R's stderr
+   startup banner as a terminating error and aborts the wrapper while R
+   continues as an orphan - that run "failed" but completed 22 minutes later.
+   PowerShell's `*>` redirect is also buffered, so the log was lost entirely.
+
+   Fix: Start-Process (a genuinely independent process) with stdout/stderr to
+   separate files.
+
+
+5. Windows deleted R's temp directory mid-run                       [FIXED]
+   Run of 2026-09-12 00:04 died ~1 minute in:
+     Error in wb$saveWorkbook() : Failed to create temporary directory
+     'C:\Users\...\AppData\Local\Temp\RtmpCUJzPJ\workbookTemp_1134c151e8f'
+     ... reason 'No such file or directory'
+
+   NOT a code failure. R's own session temp directory was deleted while R was
+   running - RtmpCUJzPJ no longer exists, while older Rtmp* dirs survive.
+   Cause: Windows Automatic Maintenance. SilentCleanup (Disk Cleanup) had
+   started at 23:24:39 and these tasks run long in the background. C: was down
+   to 27.7 GB free of 476 GB, which is why cleanup was running hard.
+
+   Why this workflow is unusually exposed: openxlsx creates a workbookTemp_*
+   folder under tempdir() for EVERY saveWorkbook call, so a 35-minute run
+   makes a dozen-plus attempts - a dozen chances to collide with a cleaner.
+
+   Fix, applied at launch only:
+     $env:TMP = $env:TEMP = $env:TMPDIR = 'D:\Rtemp'
+   before Start-Process. D: has 768 GB free and is not a Windows-managed
+   cleanup target. The child R process inherits it; nothing machine-wide is
+   changed and no other R session is affected.
+
+   IMPORTANT - THIS FIX IS PER-LAUNCH AND DOES NOT PERSIST. Running the script
+   from RStudio or a fresh terminal reverts to the C: temp directory and can
+   fail the same way. The durable fix would be a TMPDIR line in .Renviron,
+   which was deliberately NOT done: it would affect every R session on the
+   machine and that is the user's call, not the script's.
+
+   Measured side effect: none. The 591-sheet L4 workbook took 5m36s writing
+   scratch to D:, marginally faster than the ~6 min on C:.
+
+   This is the second time an external process has killed an R run this
+   session; see item 4 for the first, which had a different cause.
+
+
+================================================================================
+PART 2 - GRIN DATA SOURCE REPLACED (2026-09-09)
+================================================================================
+Input changed from the two-part CSV export to
+  WebQueryGRIN-Global_distributions_combined.xlsx
+
+The old pair was a NATIVE-ONLY extract: its 199,390 rows are exactly the
+geography_status_code == "n" subset of the new file. That is why the old status
+column looked uninformative - every non-native record had been filtered out
+upstream.
+
+                          old CSVs        new xlsx
+  rows                     199,390         222,446   (+23,056)
+  species                   13,721          13,838   (+117)
+  country codes                246             251
+  status codes             n only          n, i, c, a, u, o, "" (5 blank)
+  extra fields                 -           country_name, continent, subcontinent
+
+116 species gain GRIN evidence they never had - including Allium cepa (onion),
+Allium porrum (leek), Abelmoschus esculentus (okra) and Pisum sativum.
+
+NEW STATUS FIELDS
+  GRIN : grin_status  - "n" -> native, every other code -> non-native
+  WCFP : occurrence_status collapsed from four values (native / introduced /
+         extinct / doubtful) to native / non-native. The raw flags are still
+         carried, so the four-way distinction is recoverable. case_when (not
+         if_else) preserves the original NA handling.
+
+Both aggregate per (area, taxon) as a comma-separated list, so a taxon recorded
+both ways in one country reads "native, non-native" - 1,516 country/taxon pairs
+are genuinely both. status_GRIN now sits alongside status_WCFP in the combined
+tables, the workbooks (8 columns, was 7) and the popups.
+
+A TRAP IN THE DATA, ALREADY AVOIDED
+  107,354 of the 222,446 `state` values (48%) are NOT empty strings - they are
+  a single NON-BREAKING SPACE (U+00A0, bytes c2 a0). trimws() does not strip
+  it; str_squish() does. The L4 pipeline uses str_squish(), so those rows
+  correctly fall through to tier 2 (smeared across the country). Had it used
+  trimws(), all 107,354 would have been sent to tier-1 state matching and
+  matched nothing - silently losing half the GRIN records at L4.
+
+
+================================================================================
+PART 3 - GEOGRAPHY RESOLUTION (2026-09-09 / 10)
+================================================================================
+A sustained pass over how GRIN's geography maps onto Natural Earth polygons.
+Before this, 4,175 rows were dropped silently and several territories rendered
+as white "no data" holes despite having data.
+
+3a. COUNTRY-CODE ALIASES
+    Territories with no Natural Earth admin-0 polygon of their own, folded into
+    the polygon that can carry them:
+
+      GLP GUF MTQ REU XYO -> France            (French overseas departments)
+      ANT                 -> CuraÃ§ao           (147 rows, was dropped)
+      SJM                 -> Norway
+      CXR                 -> Indian Ocean Territories
+      TMP                 -> East Timor
+      GIB                 -> United Kingdom
+      TKL                 -> New Zealand
+
+    Two fixes here were bugs, not additions:
+      TMP pointed at "Timor-Leste", which is Natural Earth's `name`, not its
+      `admin` ("East Timor"). The alias therefore passed the !is.na(admin)
+      filter and put 14 rows into a country that does not exist on the map -
+      invisible everywhere, and filed separately from the occurrence/WCFP
+      evidence for the same place, so those taxa could fail the >=2 rule.
+      XYO was dropped as "not a genuine ISO3 code". GRIN's own
+      GEOGRAPHY_COUNTRY_CODE lookup identifies it as MAYOTTE.
+
+    France's overseas departments have NO polygon at 1:50m OR 1:10m - verified.
+    Natural Earth treats them as integral parts of France, so folding is the
+    correct treatment, not a workaround.
+
+    A GUARD now stops the script if any alias target is not a real
+    country_polys$admin value, so this class of typo fails loudly.
+
+3b. STATE PROMOTION
+    GRIN files some territories as a `state` of the parent, e.g. Puerto Rico is
+    country_code = "USA", state = "Puerto Rico". The country-level pipeline
+    keyed on country_code alone, so Puerto Rico's records counted as United
+    States while its own Natural Earth polygon rendered white.
+
+    Promoted (869 rows), keyed on the (country_code, state) PAIR:
+      USA/Puerto Rico              -> Puerto Rico                 499 rows
+      USA/Virgin Islands, U.S.     -> United States Virgin Islands 181
+      USA/Guam                     -> Guam                          90
+      USA/Northern Mariana Islands -> Northern Mariana Islands      75
+      USA/American Samoa           -> American Samoa                23
+      AUS/Ashmore and Cartier Is.  -> Ashmore and Cartier Islands    1
+      ANT/Curacao                  -> CuraÃ§ao                      (redundant)
+
+    KEYED ON THE PAIR DELIBERATELY. Two GRIN states share a name with a
+    country: USA/"Georgia" (729 rows) and NGA/"Niger" (1 row - Niger State is
+    Nigeria's largest state, and the record is correctly coded). Matching on
+    the state name alone would move 729 American records to the country of
+    Georgia. Both verified unchanged after the promotion.
+
+    Effect: the United States species count drops as territory-only species
+    move out. Those species are not lost - they were inflating the mainland
+    figure. 244 species occur ONLY in the territories, 10 of them known to GRIN
+    nowhere else on Earth (all Puerto Rican endemics: Pleodendron macranthum,
+    Harrisia portoricensis, Garcinia portoricensis, Magnolia splendens ...).
+
+3c. HISTORICAL / REGIONAL NUMERIC CODES
+    GRIN's numeric codes are its legacy geography namespace - of 161 such
+    codes, most are obsolete entities (Ussr-Kazakh SSR, Rhodesia, Ceylon, Siam,
+    Formosa, Belgian Congo, Abyssinia, Persia). They are not ISO3 and the
+    `^[A-Z]{3}$` filter removed them BEFORE the alias check, so they vanished
+    with no message at all.
+
+    18 of the 21 codes present in the data are now expanded to their
+    constituent modern countries - 3,893 source rows -> 22,788 records:
+
+      155-159 Russian Federation parts -> Russia
+      161 Former Yugoslavia -> Slovenia, Croatia, Bosnia and Herzegovina,
+                               Republic of Serbia, Montenegro, North Macedonia,
+                               Kosovo
+      163 Czechoslovakia    -> Czechia, Slovakia
+      013 Hispaniola        -> Haiti, Dominican Republic
+      015 Korea             -> North Korea, South Korea
+      019 New Guinea        -> Papua New Guinea, Indonesia
+      005 Borneo            -> Indonesia, Malaysia, Brunei
+      002 Arabia / 023 Ancient Palestine -> 7 / 3 countries
+      001 Africa, 003 Asia, 009 Europe, 021 Northern America,
+      027 Southern America  -> all member countries
+
+    Naming traps encountered (all would have silently dropped):
+      SRB -> Natural Earth's admin is "Republic of Serbia", not "Serbia"
+      CZE -> "Czechia", not "Czech Republic"
+      SLO -> the IOC/FIFA code; ISO 3166-1 for Slovenia is SVN
+      XKX -> user-assigned for Kosovo; NE has the polygon but iso_a3 = -99
+
+    CONTINENT MEMBERSHIP COMES FROM NATURAL EARTH, NOT GRIN. GRIN assigns
+    `continent` per RECORD, based on the territory involved, so a country
+    appears in whichever continents its territories fall in: Madeira makes
+    Portugal "African", the Canaries make Spain "African", Puerto Rico makes
+    the USA "South American", Sinai makes Egypt "Asian", Christmas I. makes
+    Australia "Asian". Using GRIN's own column would have counted an "Africa"
+    taxon as present in Spain and Portugal. Natural Earth's continent is a
+    property of the country, so it has no such ambiguity. Two deliberate
+    departures, to match GRIN's TDWG-style split: Mexico is placed in Northern
+    America, and Southern America absorbs Central America and the Caribbean.
+
+    Still dropped, now with an EXPLICIT runtime message (282 rows):
+      007 Central America, 014 Indochina, 035 West Indies
+
+3d. BREAKAWAY POLYGONS FOLDED
+    Natural Earth maps de facto control, so it draws Somaliland as its own
+    admin-0 polygon. No source used here does - GRIN reports "SOM" and WCVP
+    reports Somalia - so the Somaliland polygon received nothing and rendered
+    as a white hole in the Horn of Africa, reading as "we looked and found
+    nothing".
+
+    Somaliland is now unioned into Somalia and its row dropped (verified: area
+    473,603 + 168,493 = 642,096 km2, attributes preserved, 239 other polygons
+    untouched). 30 of Natural Earth's 31 worldviews already code Somaliland as
+    SOM, so this matches the majority treatment.
+
+    NE_FOLD_POLYGONS is a table - Northern Cyprus -> Cyprus and Siachen Glacier
+    -> India are one row each if wanted. Both currently left as-is.
+
+3e. SUPPORTING ARTIFACTS (in outputs/, for reference - not read by the script)
+    WCFP_GRIN_geography_crosswalk_2026-09-09.xlsx
+      All 406 GRIN geography codes -> ISO3 -> Natural Earth admin/adm0_a3,
+      with usage counts, confidence, and PTFTW cross-validation. The mechanical
+      NE match and PTFTW agreed on 224 of 224 comparable codes - zero
+      disagreements.
+    PTFTW_countries_in_regions_2026_01_ck_with_NE_admin.xlsx
+      The PTFTW guide with Natural Earth `admin` attached, resolved two
+      independent ways (world-map name and ISO3) and cross-checked. All 248
+      rows resolved; the two paths never disagreed.
+      IMPORTANT: PTFTW's Country_name_in_world_map matches Natural Earth's
+      `name` field 238/238, NOT `admin` (197/238). The workflow keys on
+      `admin`, so PTFTW names must be translated via the NE row.
+    WCFP_dummy_iso3_keys_2026-09-09.xlsx
+      DUMMY-ISO3-n keys for the 7 entities with no usable ISO3 (Kosovo,
+      Somaliland, Northern Cyprus, Siachen Glacier, Indian Ocean Territories,
+      Ashmore & Cartier, Netherlands Antilles), applied consistently across the
+      map data, the PTFTW guide and the GRIN input.
+
+
+================================================================================
+PART 4 - OPEN ISSUES (STILL AFFECT RESULTS)
+================================================================================
+
+--------------------------------------------------------------------------------
+B. ~6% of occurrence points assigned to more than one L4 area       [OPEN]
+--------------------------------------------------------------------------------
+On a 40,000-point sample, 38,984 matched an L4 area and 2,448 (~6.3%) matched
+TWO OR MORE. Most frequently: Ukraine 322, Yunnan 266, Colombia 245, RÃ©union
+235, Great Britain 211, Sichuan 203.
+
+These are shared borders in the TDWG level-4 boundaries, NOT an artefact of the
+planar fallback in Part 1 item 2 - the same duplication occurs under s2, and is
+identical with and without st_make_valid().
+
+Impact: downstream distinct() credits the taxon to BOTH areas, so L4 richness
+is slightly inflated along borders. Needs a deliberate decision if these counts
+go into the paper: accept, assign nearest centroid, or keep only the smallest
+containing area.
+
+--------------------------------------------------------------------------------
+G. France is inflated by its overseas departments                   [OPEN]
+--------------------------------------------------------------------------------
+France now ranks 3rd globally (3,909 taxa), ahead of India and Brazil, because
+French Guiana, Guadeloupe, Martinique, RÃ©union and Mayotte all fold into the
+France polygon - tropical species from three continents counted as French.
+
+This is cartographically correct (Natural Earth has no polygon for any of
+them - see 3a) but misleading in a country ranking. If a ranked table appears
+in the paper, France needs a footnote, or those records need excluding from the
+ranking while remaining on the map.
+
+The same applies in miniature to the United Kingdom (Gibraltar), Norway
+(Svalbard) and New Zealand (Tokelau), but the counts there are trivial.
+
+--------------------------------------------------------------------------------
+H. Continent-level records corroborate very coarsely                [OPEN]
+--------------------------------------------------------------------------------
+Expanding 001/003/009/021/027 means one "Europe" record now vouches for 50
+countries at once. The >=2-source rule still applies - a continent record can
+never confirm on its own - but it CHANGES what the rule certifies: a taxon that
+WCFP places in Kenya and GRIN records only as "Africa" is now "confirmed by 2
+sources" in Kenya, where before it was single-source and excluded.
+
+Europe is where this bites hardest: 170 source rows x 50 countries = 8,500
+records. If European counts look high relative to comparable regions, this is
+why. Worth a sentence in the methods.
+
+--------------------------------------------------------------------------------
+F. Identical titles on all four maps                          [OPEN/BY DESIGN]
+--------------------------------------------------------------------------------
+All four interactive maps carry the same <h4>. They are distinguished only by
+subtitle. Requested deliberately, but noted because the heading alone no longer
+identifies which file is open.
+
+
+================================================================================
+PART 5 - RESOLVED ISSUES (AND TWO CORRECTED DIAGNOSES)
+================================================================================
+
+--------------------------------------------------------------------------------
+A. Four TDWG level-3 areas silently dropped, all non-ASCII    [FIXED 2026-09-09]
+--------------------------------------------------------------------------------
+Runtime message, present in every run up to 2026-09-09 00:48:
+    4 TDWG level-3 area names ... are dropped from the WCFP source entirely:
+    FÃ¸royar, GalÃ¡pagos, Juan FernÃ¡ndez Is., QuÃ©bec
+
+*** THE ORIGINAL DIAGNOSIS IN THIS FILE WAS WRONG ON TWO COUNTS. ***
+  Wrong claim 1: "encoding= on read.table only TAGS strings, so
+  wcvp_distribution's names are mangled." The WCVP side was fine all along.
+  Wrong claim 2: "these areas have no level-4 country breakdown." ALL 369
+  level-3 areas have level-4 children. They failed at the name comparison.
+
+Actual cause: level3.shp was read with options = "ENCODING=UTF-8". The .dbf is
+Latin-1 with no .cpg sidecar. ENCODING=UTF-8 asserts the bytes are ALREADY
+UTF-8, so GDAL passes them through untranscoded and tags them UTF-8 - strings
+labelled UTF-8 that are actually Latin-1, i.e. invalid UTF-8. R cannot process
+them (grep() emits "unable to translate to a wide string") and they never
+compare equal to the correctly-encoded names in wcvp_distribution.
+
+Proof, QuÃ©bec:
+    level3.shp   51 75 e9 62 65 63           0xe9      = Latin-1 'Ã©'
+    wcvp_dist    51 75 c3 a9 62 65 63        0xc3 0xa9 = UTF-8 'Ã©'
+
+Fix: options = "ENCODING=LATIN1" at BOTH read sites. Tested: UTF-8 matches 0/5
+accented areas; LATIN1, ISO-8859-1, WINDOWS-1252 and omitting the option all
+match 5/5. Tier-1 resolution rose 337 -> 341 of 368 areas.
+
+CONFIRMED IN THE 2026-09-10 RUN: the "4 areas dropped" message is gone, and
+Canada 1,614 / Ecuador 2,275 / Chile 608 / Faroe Islands 50 all carry data.
+Faroe Islands is a NEW country entry - it had no route into the data before.
+
+--------------------------------------------------------------------------------
+E. GRIN non-ISO3 country codes dropped silently         [RESOLVED 2026-09-10]
+--------------------------------------------------------------------------------
+Was: 21 numeric codes on 4,175 rows removed by the `^[A-Z]{3}$` filter before
+the alias check, so the runtime message named only ANT and XYO and read as
+though 2 codes were lost when 21 more went silently.
+
+Now: 18 of 21 expanded (Part 3c), ANT and XYO both resolved (Part 3a), and the
+3 remaining are reported explicitly:
+    3 GRIN numeric/region codes have no country mapping and are dropped
+    (282 rows): 007, 014, 035
+
+--------------------------------------------------------------------------------
+C. GRIN input characteristics                                 [SUPERSEDED]
+--------------------------------------------------------------------------------
+Superseded by Part 2. The status field was constant only because the export was
+pre-filtered to native records.
+
+Still true: only 71,991 of 216,563 GRIN records (~33%) are placed at a specific
+L4 area via `state`; the rest are smeared across every L4 area in their
+country. L4 GRIN evidence is much weaker than the raw record count suggests.
+
+--------------------------------------------------------------------------------
+D1. Stale output files from earlier naming                    [RESOLVED]
+--------------------------------------------------------------------------------
+Map outputs renamed to WCFP_taxa_distribution_*, and every map file now has
+"map" in its name. No stale duplicates remain.
+
+--------------------------------------------------------------------------------
+D2. Run log reached ~93 MB of repeated jsonlite warnings      [RESOLVED]
+--------------------------------------------------------------------------------
+Resolved as a side effect of the popup rework: the payload is built from named
+LISTS rather than named vectors. 0 occurrences in the current runs; stdout is
+~2 KB.
+
+--------------------------------------------------------------------------------
+D3. Method 3 could read the paper's precomputed file          [UNCHANGED]
+--------------------------------------------------------------------------------
+TODO item 4 in the script header. Noted so it is not forgotten.
+
+
+================================================================================
+PART 6 - MAP / PRESENTATION CHANGES
+================================================================================
+  Data       - "Confirmed by >=2 data sources" as a fourth toggleable layer on
+               both by-source maps, and the default view
+             - per-layer popups with .xlsx download on the by-source maps
+             - taxa lists embedded ONCE as JSON, popup table rendered in the
+               browser on first open (previously embedded twice, as popup HTML
+               and again as download payload; this roughly halved the two
+               combined maps)
+  Geography  - Antarctica removed from both L4 maps
+             - Somaliland folded into Somalia (Part 3d)
+             - L3 outlines at weight 2 over the 1.3 L4 mesh, in a dedicated map
+               pane at z-index 450. A pane is required, not just draw order:
+               the L4 layers use bringToFront on hover, which would otherwise
+               bury the L3 outlines permanently
+  Layout     - titles 20px, top-left, black, identical across all four maps
+             - layers control under the title with a "Data source" heading
+               (injected into the DOM; addLayersControl has no title argument)
+             - zoom control bottom-left above the scale bar (by DOM move,
+               because setPosition() APPENDS and would place it below)
+             - scale bar 260px with 15px type
+             - "Taxa count" legend as a gradient bar, labels positioned by
+               VALUE not evenly spaced (pretty() breaks do not sit at even
+               fractions of the range)
+             - "Map data source" strip, flush bottom-right beside the Leaflet
+               attribution
+             - opening view zoomed in 6% (needs zoomSnap = 0.05; at the default
+               snapping a 6% change rounds back to the same zoom)
+
+Two bugs fixed here that were only findable by rendering:
+  - the legend's "0 / no data" swatch used background:grey90. That is an R
+    colour name, not valid CSS, so the swatch rendered EMPTY in every map ever
+    produced. (The row has since been removed from the legend entirely.)
+  - popups opened near the top of the map had their table clipped. Leaflet
+    decides whether to auto-pan when the popup OPENS, at which point it was
+    still an empty stub; the table was injected afterwards and grew off-screen.
+    Worse, the e.popup.update() call intended to fix this called
+    _updateContent(), which reset the popup to the stub and discarded the
+    table. Now uses _updateLayout / _updatePosition / _adjustPan.
+
+
+================================================================================
+PART 7 - LATEST RUN (2026-09-10, 00:28-00:50)
+================================================================================
+Completed cleanly, no errors, no guard failures, no leftover lib_tmp* folders.
+All three runtime guards (alias / state-promotion / region targets) passed,
+confirming every one of ~120 country targets resolves to a real Natural Earth
+admin.
+
+  GRIN records ............................................ 222,446
+      199,390 native / 23,056 non-native
+  Numeric/region codes expanded ........................... 18 of 21
+      3,893 source rows -> 22,788 records
+  Codes still dropped ..................................... 007, 014, 035 (282 rows)
+  WCFP species matched to a WCVP plant_name_id ............ 25,445 of 26,633
+  GRIN records placed at a specific L4 area via `state` ... 71,991 of 216,563
+  Countries with >=1 taxon confirmed by >=2 sources ....... 235
+  Total (country, taxon) rows ............................. 190,785
+  L4 areas with >=1 taxon confirmed ....................... 591 (across 360 L3)
+  Total (L4 area, taxon) rows ............................. 460,536
+
+CHANGE FROM THE 2026-09-09 RUN
+  countries            227 -> 235   (+8)
+  (country, taxon)  184,977 -> 190,785 (+5,808)
+  L4 figures unchanged - correct, not a failure: region rows have no ISO2 so
+  they are dropped before the L4 join, and the encoding fix affects
+  country-name resolution only.
+
+RECOVERIES CONFIRMED IN THE OUTPUT
+  Encoding fix   : Canada 1,614 Â· Ecuador 2,275 Â· Chile 608 Â· Faroe Islands 50
+  State promotion: Puerto Rico 749 Â· US Virgin Is. 251 Â· CuraÃ§ao 173 Â·
+                   Guam 115 Â· N. Mariana Is. 94 Â· American Samoa 90
+                   (Ashmore & Cartier correctly ABSENT - 1 GRIN record cannot
+                   reach the >=2 threshold)
+  Somaliland fold: "Somaliland" absent, Somalia 664 taxa
+  Region expansion: Russia 2,054 Â· South Korea 1,233 Â· Croatia 1,279 Â·
+                   Czechia 1,065 Â· Haiti 518 Â· Brunei 398 Â· Kosovo 20 (new)
+
+  Puerto Rico's 749 exceeds the 496 predicted from GRIN alone - the remainder
+  comes from occurrences and WCFP, which now have a country to attach to.
+
+TOP 10 COUNTRIES
+  China 4,729 Â· United States 4,418 Â· France 3,909 Â· India 3,664 Â· Brazil 3,399
+  Australia 3,253 Â· Mexico 2,980 Â· Colombia 2,919 Â· Indonesia 2,818 Â· Peru 2,349
+  (France's position is inflated - see open issue G.)
+
+OUTPUTS
+  00:37    <1 MB  WCFP_data_source_summary_counts.xlsx
+  00:38   6.4 MB  WCFP_taxa-lists_by_country_2plus_sources.xlsx   (235 sheets)
+  00:38   0.7 MB  WCFP_taxa_distribution_country_map_v1_simple.png
+  00:38   0.6 MB  WCFP_taxa_distribution_country_map_v1_simple.pdf
+  00:39  30.5 MB  WCFP_taxa_distribution_country_map_interactive.html
+  00:40  68.5 MB  WCFP_taxa_distribution_by_source_map_interactive.html
+  00:46  15.1 MB  WCFP_taxa-lists_by_L4area_2plus_sources.xlsx
+  00:47  75.9 MB  WCFP_taxa_distribution_L4area_map_interactive.html
+  00:50   156 MB  WCFP_taxa_distribution_by_source_L4area_map_interactive.html
+
+CAVEAT
+  The interactive behaviour (popup table and download, "Data source" heading,
+  control positions, popup auto-pan) has been verified structurally but NOT by
+  opening the files in a browser - no browser was available to the tooling. The
+  popup clipping fix in particular should be confirmed by clicking a country
+  near the top of a map.
+
+================================================================================
+PART 8 - TODO / NEXT STEPS (from the script header)
+================================================================================
+The five items below are carried over verbatim in substance from the TODO
+block at the top of the script. Status lines are added here; the script header
+does not carry them. None of these are bugs - they are planned work.
+
+1. Validate the Method 3 name matching against the paper's own code
+                                                            [NOT STARTED]
+   Confirm that our chain LSID_accepted -> wcvp_names$ipni_id ->
+   plant_name_id follows the same logic the paper's scripts use, not merely
+   the same input files. Using identical inputs with different matching logic
+   would produce a silent, plausible-looking discrepancy - the hardest kind to
+   notice.
+   Current run matches 25,445 of 26,633 WCFP species to a WCVP
+   plant_name_id; the 1,188 unmatched are the natural place to start.
+
+2. Maps at TDWG level 3 resolution                    [DONE 2026-09-11]
+   Built as a new section at the end of the script. Four outputs: an
+   interactive map, a static PNG/PDF pair styled to match the country figure,
+   and a per-L3-area workbook. See Part 9 for how it is derived and for a
+   prediction of mine that the run did not support.
+
+3. Reproduce the paper's per-taxon counts                   [NOT STARTED]
+   Validate wcvp_dist_tdwg3 / wcvp_distinct_taxa_by_tdwg3 against the paper's
+   own richness and distribution outputs for the same species list.
+   Do this BEFORE item 4, and compare against the paper's four-way status
+   classification rather than the collapsed native / non-native scheme from
+   Part 2 - the collapse happens downstream, so the comparable values are
+   still available.
+
+4. Switch Method 3 to the paper's precomputed distribution file
+                                                            [BLOCKED ON 1-3]
+     WCFP_2026_data-and-code_figshare_repo/WCFP_distribution_native_introduced.csv
+   Deliberately blocked: adopting the precomputed file before items 1-3 are
+   done would remove the very thing those checks compare against.
+
+5. Generalise the workflow to any supplied plantlist        [NOT STARTED]
+   Accept any user-supplied plantlist, not just wcfp_plantlist, and return
+   each species' distribution per country and per TDWG area using the same
+   three methods and input sources.
+   The geography resolution built in Part 3 (aliases, state promotion, region
+   and continent expansion, polygon folding) is list-independent and will
+   carry over unchanged - it keys on GRIN geography, not on taxa. The parts
+   that are WCFP-specific are the name matching in item 1 and the
+   WCFP_ID / LSID columns.
+
+================================================================================
+PART 9 - TDWG LEVEL 3 CHOROPLETH (2026-09-11)
+================================================================================
+Added because level 3 is the resolution WCFP 2026 itself reports at, so this -
+not the level 4 map - is the figure comparable to the paper's own outputs.
+Closes Part 8 item 2.
+
+HOW EACH SOURCE REACHES LEVEL 3
+  Occurrences  rolled up from src_occurrences_l4 via its area_l3 column
+  GRIN         rolled up from src_grin_l4 the same way
+  WCFP/WCVP    built NATIVELY from wcvp_dist_tdwg3 - no smearing, no name
+               matching, since WCVP is a level 3 dataset already
+
+  The roll-up is lossless, and this was checked before relying on it:
+  level3.shp and level4.geojson carry an identical set of 369 level 3 codes,
+  neither file has a code the other lacks, and level3.shp has exactly one
+  polygon row per code. L4 areas partition their parent L3 area, so rolling up
+  is equivalent to joining straight to level3.shp.
+
+  It is also SAFER than a native level 3 spatial join. level3.shp has SEVEN
+  s2-invalid features (AND, KRA, MAG, NFL, NGA, NOR, SCI) against
+  level4.geojson's three, so a direct join would need a wider planar fallback
+  than the one already justified in Part 1 item 2. Reusing the existing L4
+  join avoids that entirely.
+
+  Encoding confirmed correct under ENCODING=LATIN1 - Foroyar, Galapagos,
+  Juan Fernandez Is., Quebec, Reunion and Zaire all read properly. (Those are
+  the accented level 3 names; see issue A in Part 5 for what UTF-8 did to
+  them.)
+
+THE >=2 TEST IS APPLIED AFTER AGGREGATING TO LEVEL 3, NOT BEFORE
+  combined_confirmed_l4 already carries an area_l3 column, so a one-line
+  count(area_l3) would have produced a plausible-looking map. That is not what
+  this section does, and the difference is a real one in principle: if
+  occurrences record a taxon in one L4 area and GRIN records it in a DIFFERENT
+  L4 area of the same parent L3 area, neither L4 area reaches the threshold,
+  but at level 3 both sources are saying "this taxon is in this L3 area".
+  Rolling the L4 result up would discard those agreements.
+
+  A PREDICTION THAT DID NOT HOLD UP. This was argued to be the decision that
+  mattered. The run says otherwise, and the script prints the numbers on every
+  run so the claim stays auditable rather than asserted:
+
+      (L3 area, taxon) pairs from rolling the L4 result up  : 274,598
+      (L3 area, taxon) pairs from testing >=2 sources at L3 : 274,806
+        recovered by applying the threshold at L3           :     208
+
+  208 pairs, 0.08%. Area coverage is 360 of 368 either way - identical, not
+  the increase that was predicted. The shortcut would have produced a map
+  visually indistinguishable from this one and 99.92% identical in content.
+
+  Why the effect is so small: GRIN's fallback already smears a record across
+  every L4 area in its country, so most cross-L4 agreements were being
+  manufactured at L4 by the smearing itself. The native test only recovers
+  cases the smear did not reach.
+
+  The native test is kept regardless - it is the correct test, it cost nothing
+  extra, and it is the one that stays correct if the GRIN smearing is ever
+  tightened (see open issue B). But it should not be described as a
+  substantive methodological improvement over the roll-up. It is not.
+
+  368, not 369, is the correct denominator: Antarctica is filtered out.
+
+OUTPUTS (run of 2026-09-11, 22:56-23:24, completed cleanly)
+  23:24   9.2 MB  WCFP_taxa-lists_by_L3area_2plus_sources.xlsx
+  23:24  51.1 MB  WCFP_taxa_distribution_L3area_map_interactive.html
+  23:24   0.8 MB  WCFP_taxa_distribution_L3area_map_v1_simple.png
+  23:24   2.1 MB  WCFP_taxa_distribution_L3area_map_v1_simple.pdf
+
+  274,806 (L3 area, taxon) rows across 360 areas.
+
+  All nine pre-existing outputs reproduced their previous figures exactly
+  (235 countries / 190,785 rows; 591 L4 areas / 460,536 rows; 71,991 GRIN
+  records state-matched), confirming the appended section perturbed nothing
+  upstream.
+
+STYLING
+  Interactive map follows the other three: YlGn, gradient legend, click hint,
+  scale bar, "Map data source: TDWG WGSRPD level 3". Polygon boundary weight
+  is 1.3, matching the L4 polygons rather than the 2.0 used for L3 outlines on
+  the level 4 maps - there, 2.0 marks L3 as the parent division over a finer
+  mesh; here L3 is the shaded unit with nothing nested inside it, so the same
+  weight would just read as heavy. No extra map pane: one polygon layer.
+  Static PNG/PDF use magma, matching the country figure so the two pair as
+  publication plates.
+
+  A by-source toggle version at level 3 was added on 2026-09-12, so all three
+  resolutions now have the same pair. It reuses src_occurrences_l3 /
+  src_grin_l3 / src_wcfp_l3 directly - no new derivation logic, just four
+  richness counts and the layer wiring. One tightening over the level 4
+  original: overlayGroups is passed bs_layer_names rather than the four labels
+  retyped, so the toggle labels cannot drift from the payload keys.
+  Output: WCFP_taxa_distribution_by_source_L3area_map_interactive.html,
+  138.2 MB (predicted 60-90 MB - the prediction was low; see Part 10).
+
+VERIFICATION
+  The static PNG was opened and inspected - Antarctica absent, legend present,
+  TDWG subdivisions rendering (US and Australian states, Brazilian and Chinese
+  provinces), no conspicuous white holes, richness pattern plausible. This is
+  the only map output in the whole workflow that has been checked visually
+  rather than structurally. The interactive L3 map carries the SAME unverified
+  caveat as the other three - see the end of Part 7.
+
+================================================================================
+PART 10 - IUCN RED LIST TOGGLE MAPS AT LEVEL 3 (2026-09-12)
+================================================================================
+Three maps, same shape as the by-source map but toggling on the taxon's IUCN
+Red List category. Every taxon shown is one already confirmed by >=2 of the 3
+data sources - these subset combined_confirmed_l3, they do not re-derive
+presence.
+
+SOURCE OF THE CATEGORY
+  red_list_category_code, column 30 of the WCFP plantlist. No new input file
+  and no external IUCN lookup.
+
+  as.character() is applied when reading it. This is deliberate, not
+  defensive noise: wcfp_plantlist is read with read_excel's default
+  guess_max = 1000 and the column is 59% empty, so a run of blank leading
+  cells could type it as logical and turn every category into "TRUE"/"NA".
+  Verified it currently reads as character - but that is a property of the
+  current file, not a guarantee.
+
+CLEANUP APPLIED
+  Pre-2001 "Lower Risk" codes  LR/lc -> LC, LR/nt -> NT, LR/cd -> NT
+    (LR/cd is conventionally treated as NT since the category was retired)
+  One malformed cell           IUCN_LC -> LC
+  Blank / missing              -> NE, IUCN's own code for Not Evaluated
+
+  Checked before use: wcfp_name_match is unique across all 26,632 rows and no
+  taxon carries two different categories, so the join cannot duplicate rows.
+  Severity tie-breaking is implemented anyway, as a guard for future data.
+
+TWO RUNTIME GUARDS
+  1. Any category code not in RL_SEVERITY stops the run. Bucketing an unknown
+     code into "Not assessed" would understate threat.
+  2. Each scheme must partition all nine categories exactly once. A missing
+     category silently drops taxa; a repeated one draws them on two layers and
+     double-counts them in the subtitle. Neither is visible by eye on a
+     finished map. All three schemes verified to sum to 26,632.
+
+THE ONE DESIGN DEPARTURE FROM THE BY-SOURCE MAPS - PER-LAYER COLOUR SCALES
+  The by-source maps share one palette across four layers of comparable size.
+  Here they are not comparable: Least Concern has 8,677 taxa and Extinct has 2.
+  Under a shared scale every threatened layer would render as a uniform pale
+  wash - the exact pattern these maps exist to show would be the one thing
+  invisible.
+
+  So each layer carries its own scale and its own legend, and only the first
+  layer is visible on open. The cost is that shading is NOT comparable between
+  layers. That is stated in bold in the on-map hint box rather than left for
+  the reader to infer, because a reader who misses it will read the maps
+  exactly backwards.
+
+  Mechanically: all legends are emitted into one control, hidden, each tagged
+  with data-layer, and shown/hidden by JS keyed on the layers-control
+  checkboxes. Driving it from the checkboxes rather than Leaflet's
+  overlayadd/overlayremove keeps it consistent with the rest of the file's
+  DOM-based approach. Verified present in the output HTML: all five legend
+  divs in the grouped map carry data-layer values matching the layer names
+  exactly.
+
+CATEGORIES ACROSS THE 25,200 TAXA CONFIRMED BY >=2 SOURCES AT LEVEL 3
+    Not assessed   14,530   (57.7%)      Data Deficient        359
+    Least Concern   8,677                Critically Endang.    129
+    Vulnerable        582                Extinct in the Wild     3
+    Near Threatened   475                Extinct                 2
+    Endangered        443                -> Threatened total 1,159
+
+  THE COVERAGE CAVEAT IS THE HEADLINE, NOT A FOOTNOTE. 57.7% of the confirmed
+  taxa have never been assessed, and of those that have, 80% are Least
+  Concern. Any statement of the form "N food plant taxa in region X are
+  threatened" is a statement about the assessed minority only. The "Not
+  assessed" layer exists so a reader cannot mistake an unassessed area for a
+  low-threat one - on this dataset that is the larger category everywhere.
+
+OUTPUTS (run of 2026-09-12, 00:04-00:38, completed cleanly)
+  00:36:08   87.8 MB  ..._by_redlist_grouped_L3area_map_interactive.html
+  00:37:20  146.4 MB  ..._by_redlist_categories_L3area_map_interactive.html
+  00:38:00   58.4 MB  ..._by_redlist_threatened_L3area_map_interactive.html
+
+  Size scales with layer count because Leaflet layer groups each embed their
+  own copy of the level 3 geometry - the 9-layer version carries it nine
+  times. Inherent to the approach, not avoidable without a rewrite.
+
+  A NOTE ON MY OWN ESTIMATES. The by-source L3 map was predicted at 60-90 MB
+  and came in at 138.2; the categories map was predicted at ~90 MB and came in
+  at 146.4. Both were underestimates of roughly the same proportion, which
+  suggests the per-layer geometry cost is larger than assumed. Anyone sizing a
+  future map of this kind should budget well above a naive per-layer estimate.
+
+NOT DONE
+  The plantlist also carries IUCN_possibly_extinct (5 taxa TRUE) and
+  IUCN_possibly_extinct_in_the_wild (3 TRUE). These are separate flags from
+  the category code - a "possibly extinct" taxon is usually still categorised
+  CR - so they currently sit inside the CR/Threatened layers with no way to
+  distinguish them. Left out because the counts are tiny; they could be broken
+  out as their own layer, or surfaced in the popup table, if wanted.
+
+  Only the static L3 PNG has been inspected visually. All six interactive maps
+  carry the browser-unverified caveat at the end of Part 7, and for these
+  three that specifically includes the legend-swap behaviour, which is new
+  code and has been verified structurally only.
+
+================================================================================
+END OF NOTES
+================================================================================
