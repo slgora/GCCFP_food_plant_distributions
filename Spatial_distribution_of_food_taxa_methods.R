@@ -1,5 +1,5 @@
 # Project: GCCFP:Species Distribution (in countries, L3, L4)
-# Main workflow
+# Main workflow to filter food plant taxa by geography
 # Aims (2)                                                                           #
 #     * 1. Be able to recognize how many food plant species are in any given         #
 #          country, and which food plant species those are.                          #
@@ -16,7 +16,7 @@
 #
 # What comes from the WCFP 2026 paper's own code vs. what's custom to this
 # script:
-#  - Method 3 (WCVP/TDWG level 3 join) reproduces data_summaries.R section 8
+#  - Method 3 (TDWG level 3 join) reproduces data_summaries.R section 8
 #    "NATIVE / INTRODUCED FLAG" from the paper's data-and-code archive
 #    (https://doi.org/10.6084/m9.figshare.31441615.v2): the join of
 #    wcfp_plantlist -> WCVP plant_name_id -> WCVP distribution table, using
@@ -28,12 +28,11 @@
 #    (raw occurrence points), Method 2 (GRIN Taxonomy distributions), the
 #    3-source "combined method" synthesis (>=2 of 3 sources), the static
 #    ggplot country-level richness map, and the interactive leaflet map.
-## ------------------------------------------------------------------------------ ##
 
 
 ## ============================================================================== ##
 ##  HOW TO RUN THIS WORKFLOW
-##  Runtime ~37 min. Writes 17 files, ~1.1 GB. Nothing is read from the internet.
+##  Runtime ~65 min. Writes 26 files, ~2.0 GB. Nothing is read from the internet.
 ## ============================================================================== ##
 ##
 ## PACKAGES
@@ -57,33 +56,48 @@
 ##   anything that could not be matched. See the block there for the one limit:
 ##   your taxa must be in the WCFP list.
 ##
-## INPUTS - all in inputs_dir, all local
-##   occurrences_land.rds                              Method 1: occurrence points
-##   WebQueryGRIN-Global_distributions_combined.xlsx   Method 2: GRIN distributions
-##   wcvp_names.csv  +  wcvp_distribution.csv          Method 3: WCVP/TDWG (pipe-sep)
-##   WCFP_plantlist_final_2026-06-02.xlsx              the taxon list + Red List codes
-##   level3/level3.shp  +  level4.geojson              TDWG WGSRPD boundaries
+## INPUTS - all local, all under inputs_dir
+##   data/occurrences_data/
+##     occurrences_land.rds                            Method 1: occurrence points
+##   data/GRIN_distributions_data/
+##     WebQueryGRIN-Global_distributions_combined.xlsx Method 2: GRIN distributions
+##   the WCFP 2026 release folder  (found by FILENAME, not by folder name -
+##   see find_input(); that folder has been renamed more than once)
+##     WCFP_distribution_native_introduced.csv         Method 3: WCFP/TDWG
+##     WCFP.xlsx                                       the taxon list itself, plus
+##                                                     taxon matching for Methods
+##                                                     1 and 2, Red List codes,
+##                                                     names, authorities, WCFP_ID
+##   TDWG_L3_L4/
+##     level3/level3.shp  +  level4/level4.geojson     TDWG WGSRPD boundaries
 ##   Country polygons come from the rnaturalearth PACKAGE, not a file.
 ##
-## OUTPUTS - all written to outputs_dir. 17 files:
-##   Workbooks (4)
-##     WCFP_data_source_summary_counts.xlsx
-##     WCFP_taxa-lists_by_country_2plus_sources.xlsx      236 sheets
-##     WCFP_taxa-lists_by_L4area_2plus_sources.xlsx       592 sheets
-##     WCFP_taxa-lists_by_L3area_2plus_sources.xlsx
-##   Interactive maps (9)  ..._map_interactive.html
-##     country_map / by_source_map                        country resolution
-##     L4area_map  / by_source_L4area                     TDWG level 4
-##     L3area_map  / by_source_L3area                     TDWG level 3
-##     by_redlist_grouped_L3area / _categories_ / _threatened_
-##   Static figures (4)    ..._v1_simple.png / .pdf
-##     country_map, L3area_map
+##   There is no separate plantlist file. wcfp_name_match and genus_species,
+##   the only two columns the workflow used from the old working copy, are
+##   derived from WCFP.xlsx - both reproduce it exactly.
+##
+## OUTPUTS - all under outputs_dir. 26 files:
+##   taxa_lists_and_summaries/ (4)
+##     counts_food-plants_distributions_by-data-source.xlsx
+##     taxa-lists_food-plants_distributions_by-country_2-or-more-sources.xlsx  236 sheets
+##     taxa-lists_food-plants_distributions_by-L4_2-or-more-sources.xlsx       592 sheets
+##     taxa-lists_food-plants_distributions_by-L3_2-or-more-sources.xlsx       361 sheets
+##   interactive_html_maps/equal_earth_maps/ (8)  map_food-plants_*.html
+##     ..._by-country_2-or-more-sources   ..._by-country_by-data-source
+##     ..._by-L4_2-or-more-sources        ..._by-L4_by-data-source
+##     ..._by-L3_2-or-more-sources        ..._by-L3_by-data-source
+##     ..._IUCN-grouped_  /  ..._IUCN-categories_  ..._by-L3_...
+##     All Equal Earth (EPSG:8857). The Web Mercator set was removed - Mercator
+##     is not equal-area, which is the wrong picture for a richness map.
+##   figures_static_maps/ (4)  figure_food-plants_*.png / .pdf, country and L3
+##     Still EPSG:4326 (equirectangular), not Mercator and not equal-area.
 ##
 ## ORDER OF PLAY
-##   1 setup  2 Method 1 occurrences  3 Method 2 GRIN  4 Method 3 WCVP/TDWG
+##   1 setup  2 Method 1 occurrences  3 Method 2 GRIN  4 Method 3 WCFP/TDWG
 ##   5 combine (>=2 of 3) + country outputs  6 level 4  7 level 3  8 Red List
+##   9 all nine interactive maps, Equal Earth (last - see that section's header)
 ##
-## KNOWN ISSUES: outputs/WORKFLOW_NOTES_issues_and_fixes_2026-09-08.txt
+## KNOWN ISSUES: WORKFLOW_NOTES_open_issues.txt
 ## ============================================================================== ##
 
 
@@ -110,7 +124,7 @@ library(htmlwidgets)
 # All input data used by this workflow is consolidated here (see
 # copy_workflow_inputs.R, which copies everything from its original
 # scattered locations into this one folder).
-inputs_dir <- "D:/GCCFP_food_plant_distributions/inputs/wcfp_taxa_distribution"
+inputs_dir <- "D:/GCCFP_food_plant_distributions/inputs"
 
 ## ============================================================================== ##
 ##  RUN YOUR OWN TAXA LIST - set USER_TAXA_FILE and run the script unchanged
@@ -143,7 +157,33 @@ USER_TAXA_FILE   <- NULL   # path to your .xlsx/.csv, or NULL for the full WCFP 
 USER_TAXA_COLUMN <- NULL   # name of the taxon-name column, or NULL to auto-detect
 
 # Everything is written under here. A user-list run gets its own subfolder.
-outputs_root <- "D:/GCCFP_food_plant_distributions/outputs"
+# Outputs go to the shared GCCFP Drive folder, not into the project. Each run
+# gets its own dated folder, so a run never overwrites an earlier one and the
+# two can be compared.
+#
+# This is a Google Drive "shortcut target" path. Drive must be mounted and the
+# folder synced before the run starts - the check below fails immediately
+# rather than letting an hour of work discover it at the last write.
+outputs_root <- paste0("G:/.shortcut-targets-by-id/",
+                       "1s1xfW_iLmsvnSftrb38wREf8b0QSuicc/GCCFP/",
+                       "Data and analyses/Food plant distributions/outputs")
+RUN_STAMP    <- format(Sys.Date(), "%Y-%m-%d")
+
+# Proved writable HERE, at the top, before a single input is read. The first
+# version of this check sat next to outputs_dir further down - which is after
+# the 78 MB occurrence file has been loaded, so "before any work" was not true.
+# A missing Drive mount must cost seconds, not an hour.
+if (!dir.exists(outputs_root)) {
+  stop("outputs_root does not exist: ", outputs_root,
+       "\n  If this is the Google Drive folder, check Drive is mounted and the",
+       "\n  folder is synced, then re-run.")
+}
+local({
+  probe <- file.path(outputs_root, paste0(".write_probe_", Sys.getpid()))
+  okw <- tryCatch({ writeLines("probe", probe); file.remove(probe); TRUE },
+                  error = function(e) FALSE, warning = function(w) FALSE)
+  if (!okw) stop("outputs_root is not writable: ", outputs_root)
+})
 
 
 # ---------------------------------------- #
@@ -154,7 +194,112 @@ outputs_root <- "D:/GCCFP_food_plant_distributions/outputs"
 # How many species have geo data?
 # ---------------------------
 # Load occurrences dataset
-occurrences_data <- readRDS(file.path(inputs_dir, "occurrences_land.rds"))
+## ------------------------------------------------------------------ ##
+## Normalise a user-supplied taxon name to WCFP's form.
+##
+## wcfp_name_match is the accepted binomial with NO authors, and is identical
+## to taxon_name_accepted for all 26,632 rows. Shapes present: 26,428 two-word
+## names and 204 three-word ones - infix hybrids ("Achillea x serrata"),
+## leading hybrids ("x Pyraria irregularis"), leading "+" graft chimaeras
+## ("+ Pyrocydonia danielii") and "sect." names. All four must survive
+## normalisation intact, which is why authors are stripped by TOKEN COUNT
+## rather than by pattern - a pattern that strips capitalised trailing words
+## would eat "Taraxacum sect. Taraxacum".
+## ------------------------------------------------------------------ ##
+normalise_taxon_name <- function(x) {
+  x <- str_squish(as.character(x))
+  x <- gsub("×", "x", x, fixed = TRUE)   # unify the hybrid sign to plain x
+  x <- gsub("’|‘|`", "'", x)         # curly quotes -> straight
+  x <- sub("^([A-Za-z])", "\\U\\1", tolower(x), perl = TRUE)  # sentence case
+  x
+}
+
+## ------------------------------------------------------------------ ##
+## Occurrence taxa are matched to the PUBLISHED WCFP list before use.
+##
+## occurrences_land.rds arrives with a `wcfp_name_match` column, already
+## matched against the WORKING plantlist. That working copy carries a dozen
+## entries the published release does not, so without this gate the
+## occurrence source would recognise taxa that the WCFP distribution source
+## (also published) has never heard of - the two sources would be scoped to
+## different lists while being compared to each other.
+##
+## Measured cost of the gate: 8 of 26,126 occurrence taxa and 1,248 of
+## 5,064,165 rows (0.025%). Those 8 are synonyms - Echinochloa colonum,
+## Opuntia monacanthos, Quercus conferta and five more - and are exactly the
+## taxa the published distribution table also omits.
+##
+## Applied at BOTH places the .rds is read.
+## ------------------------------------------------------------------ ##
+## The two WCFP release files are found by NAME under inputs/data, not by a
+## hardcoded folder. The folder holding them has been renamed more than once,
+## and each rename silently broke a fixed path; the filenames have not changed.
+## Errors name every candidate found, so a duplicate or a missing file is
+## obvious rather than a bare "path does not exist".
+find_input <- function(filename, root = file.path(inputs_dir, "data")) {
+  hits <- list.files(root, pattern = paste0("^", gsub("\\.", "\\\\.", filename), "$"),
+                     recursive = TRUE, full.names = TRUE)
+  if (length(hits) == 1) return(hits)
+  if (length(hits) == 0)
+    stop("input not found under ", root, ": ", filename)
+  stop("input found in more than one place - resolve the duplicate: ",
+       paste(hits, collapse = " | "))
+}
+
+wcfp_reference_file <- find_input("WCFP.xlsx")
+
+wcfp_reference <- readxl::read_excel(wcfp_reference_file, sheet = "WCFP")
+wcfp_reference_names <- unique(normalise_taxon_name(wcfp_reference$taxon_name_accepted))
+cat("WCFP published reference list:", nrow(wcfp_reference), "taxa\n")
+
+## normalised accepted name -> WCFP_ID. Verified one-to-one before relying on
+## it: 26,622 names, 26,622 ids, no name mapping to two ids. That matters
+## because the gate below left_joins it onto a 5-million-row table, where a
+## duplicated key would inflate every richness count with no other symptom.
+wcfp_id_lookup <- tibble::tibble(
+  id_key  = normalise_taxon_name(wcfp_reference$taxon_name_accepted),
+  WCFP_ID = wcfp_reference$WCFP_ID
+) %>%
+  filter(!is.na(id_key), nzchar(id_key))
+stopifnot(!anyDuplicated(wcfp_id_lookup$id_key))
+
+## The gate, for any table carrying a WCFP taxon name in column `col`.
+##
+## Does two things at once, deliberately: scopes the table to the published
+## list AND stamps each surviving row with its WCFP_ID. Both depend on the same
+## name match, so doing them together means a row cannot be kept without also
+## getting an id - the occurrence and GRIN sources arrive keyed only on a name
+## string, and the published distribution source is keyed on WCFP_ID.
+##
+## What it drops is always named, never just counted: a silent filter on taxon
+## names is indistinguishable from a bad join.
+keep_published_taxa <- function(x, col, what) {
+  n0 <- nrow(x)
+  t0 <- length(unique(x[[col]]))
+  keep <- normalise_taxon_name(x[[col]]) %in% wcfp_reference_names
+  out <- x[keep, , drop = FALSE]
+
+  out$id_key <- normalise_taxon_name(out[[col]])
+  out <- dplyr::left_join(out, wcfp_id_lookup, by = "id_key")
+  out$id_key <- NULL
+  # The gate guarantees a match, so an NA id here means the two lookups
+  # disagree - which would be a bug in this function, not in the data.
+  stopifnot(nrow(out) == sum(keep), !anyNA(out$WCFP_ID))
+
+  dropped <- setdiff(unique(x[[col]]), unique(out[[col]]))
+  cat(what, ": kept ", nrow(out), " of ", n0, " rows (",
+      length(unique(out[[col]])), " of ", t0, " taxa, ",
+      length(unique(out$WCFP_ID)), " WCFP_IDs); dropped ",
+      length(dropped), " not on the published WCFP list", sep = "")
+  if (length(dropped)) cat(": ", paste(sort(dropped), collapse = ", "), sep = "")
+  cat("\n")
+  out
+}
+
+match_occurrences_to_wcfp <- function(x, what = "occurrences")
+  keep_published_taxa(x, "wcfp_name_match", what)
+
+occurrences_data <- match_occurrences_to_wcfp(readRDS(file.path(inputs_dir, "data/occurrences_data/occurrences_land.rds")), "occurrences (diagnostic)")
 
 ## ------------------------------------------------------------------ ##
 ## Fold breakaway / unrecognised polygons into their parent state.
@@ -190,6 +335,19 @@ fold_breakaway_polygons <- function(x) {
     g[which(x$admin == p)] <- merged
     st_geometry(x) <- g
   }
+  # Restore the column's declared type. st_union() returns a GEOMETRY-typed
+  # sfc, and assigning even one such element re-types the WHOLE column as
+  # GEOMETRY. That silently changes what st_cast("POLYGON") does further down:
+  #
+  #   MULTIPOLYGON column -> explodes each feature into its parts  (1,512 rows)
+  #   GEOMETRY column     -> takes the FIRST RING of each feature  (240 rows)
+  #
+  # Nothing errors and the stored geometry is untouched, so the spatial joins
+  # were always right. What broke was the country-label placement, which picks
+  # each country's largest part: Russia collapsed from 101 parts to a single
+  # 18 km2 island and got its name printed on it. The USA likewise ended up
+  # labelled on a fragment off Alaska.
+  st_geometry(x) <- st_cast(st_geometry(x), "MULTIPOLYGON")
   x
 }
 
@@ -264,7 +422,7 @@ message("Total countries with data: ", nrow(country_richness))
 # evidence at all. It also adds country_name, continent and subcontinent
 # columns (not used below, but available).
 GRIN_countries <- read_excel(
-  file.path(inputs_dir, "WebQueryGRIN-Global_distributions_combined.xlsx"),
+  file.path(inputs_dir, "data/GRIN_distributions_data/WebQueryGRIN-Global_distributions_combined.xlsx"),
   guess_max = 100000
 ) %>%
   # Status collapsed to a two-level field: GRIN's "n" is native, every other
@@ -311,29 +469,29 @@ cat("GRIN records:", nrow(GRIN_countries), "-",
 # https://doi.org/10.6084/m9.figshare.31441615.v2
 
 # load wcfp
-wcfp_plantlist <- read_excel(
-  file.path(inputs_dir, "WCFP_plantlist_final_2026-06-02.xlsx"))
-
-
-## ------------------------------------------------------------------ ##
-## Normalise a user-supplied taxon name to WCFP's form.
+## The taxon list IS the WCFP 2026 release. The working copy that used to sit
+## in inputs/ is gone, and nothing is lost by it: two of its columns were all
+## the workflow still used, and both are reconstructible here.
 ##
-## wcfp_name_match is the accepted binomial with NO authors, and is identical
-## to taxon_name_accepted for all 26,632 rows. Shapes present: 26,428 two-word
-## names and 204 three-word ones - infix hybrids ("Achillea x serrata"),
-## leading hybrids ("x Pyraria irregularis"), leading "+" graft chimaeras
-## ("+ Pyrocydonia danielii") and "sect." names. All four must survive
-## normalisation intact, which is why authors are stripped by TOKEN COUNT
-## rather than by pattern - a pattern that strips capitalised trailing words
-## would eat "Taraxacum sect. Taraxacum".
-## ------------------------------------------------------------------ ##
-normalise_taxon_name <- function(x) {
-  x <- str_squish(as.character(x))
-  x <- gsub("×", "x", x, fixed = TRUE)   # unify the hybrid sign to plain x
-  x <- gsub("’|‘|`", "'", x)         # curly quotes -> straight
-  x <- sub("^([A-Za-z])", "\\U\\1", tolower(x), perl = TRUE)  # sentence case
-  x
-}
+##   wcfp_name_match  identical to taxon_name_accepted in every row of the
+##                    working copy - checked, not assumed
+##   genus_species    the name with the hybrid sign removed, lower-cased. It
+##                    exists to match GRIN, which writes hybrids without the
+##                    "x" - worth 153 GRIN rows across 15 taxa such as
+##                    Abelmoschus x caillei
+##
+## Only the MULTIPLICATION SIGN and standalone x / + tokens are stripped. A
+## naive [x] strip turns "oxystachya" into "o ystachya" and silently breaks
+## 1,700 names.
+wcfp_plantlist <- read_excel(wcfp_reference_file, sheet = "WCFP") %>%
+  mutate(
+    wcfp_name_match = str_squish(taxon_name_accepted),
+    genus_species   = tolower(str_squish(gsub("(^|\\s)(sect\\.)(\\s|$)", " ",
+                                         gsub("(^|\\s)[x\u00d7+](\\s|$)", " ",
+                                              taxon_name_accepted))))
+  )
+
+
 
 # How many leading tokens are the NAME, the rest being authors.
 .name_token_count <- function(x) {
@@ -464,12 +622,14 @@ subset_plantlist_to_user_taxa <- function(plantlist, path, column = NULL,
   plantlist[sort(unique(hit[!is.na(hit)])), , drop = FALSE]
 }
 
-# Output folder: a user-list run gets its own, so a full WCFP run is never
-# overwritten and the two can be compared side by side.
+# Output folder: every run gets its own dated folder, and a user-list run gets
+# a further one inside it, so no run overwrites another.
 if (is.null(USER_TAXA_FILE)) {
-  outputs_dir <- outputs_root
+  outputs_dir <- file.path(outputs_root, paste0("outputs_", RUN_STAMP))
+  if (!dir.exists(outputs_dir)) dir.create(outputs_dir, recursive = TRUE)
+  message("All outputs go to: ", outputs_dir)
 } else {
-  outputs_dir <- file.path(outputs_root,
+  outputs_dir <- file.path(outputs_root, paste0("outputs_", RUN_STAMP),
                            paste0("user_", tools::file_path_sans_ext(basename(USER_TAXA_FILE))))
   if (!dir.exists(outputs_dir)) dir.create(outputs_dir, recursive = TRUE)
   message("User-list run. All outputs go to: ", outputs_dir)
@@ -477,79 +637,53 @@ if (is.null(USER_TAXA_FILE)) {
     wcfp_plantlist, USER_TAXA_FILE, USER_TAXA_COLUMN, report_dir = outputs_dir)
 }
 
-wcvp_data_dir <- inputs_dir
-
 # ----------------------------------------------------------------- #
-# 3a) Load the WCVP snapshot shipped with the WCFP paper - the same
-#     files used to produce the published TDWG level 3 distribution
-#     counts (Govaerts et al. 2021, Scientific Data 8, 215). Shipped
-#     rather than freshly downloaded because WCVP is revised
-#     continuously and a later download wouldn't reproduce the same
-#     counts.
+# 3) WCFP distribution source: the PROCESSED table published with the
+#    paper, read directly.
+#
+#    This replaces a three-step reconstruction that used to live here:
+#    read wcvp_names.csv, match wcfp_plantlist$LSID_accepted to
+#    wcvp_names$ipni_id to obtain a plant_name_id, then join that to
+#    wcvp_distribution.csv. It rebuilt, from 418 MB of raw WCVP snapshot,
+#    a table the paper had already published.
+#
+#    The published file is keyed on WCFP_ID directly, so no identifier
+#    matching happens at all - and with it goes every way that matching
+#    could quietly go wrong: blank LSIDs colliding, several WCFP_IDs
+#    sharing one plant_name_id, lower-case TDWG codes joining to nothing.
+#
+#    Worth knowing: taxa are now present on the paper's terms rather than
+#    on whether an LSID happened to match locally, so this source's taxon
+#    count can differ slightly from the old path. The counts printed
+#    below are the check on that.
 # ----------------------------------------------------------------- #
-wcvp_names <- read.table(file.path(wcvp_data_dir, "wcvp_names.csv"), sep = "|",
-                          header = TRUE, quote = "", fill = TRUE, encoding = "UTF-8")
-wcvp_distribution <- read.table(file.path(wcvp_data_dir, "wcvp_distribution.csv"), sep = "|",
-                                 header = TRUE, quote = "", fill = TRUE, encoding = "UTF-8")
+wcfp_dist_file <- find_input("WCFP_distribution_native_introduced.csv")
 
-# A handful of records carry a lower-case TDWG code, which fails to join
-# to any TDWG L3 lookup/shapefile downstream. Normalise, same as the
-# paper's own script.
-wcvp_distribution$area_code_l3 <- toupper(trimws(wcvp_distribution$area_code_l3))
+wcfp_distribution_published <- readr::read_csv(
+  wcfp_dist_file, show_col_types = FALSE, progress = FALSE)
 
-# Accepted WCVP names with a usable (non-blank) IPNI identifier - blank
-# ids would otherwise all match each other and any of your species that
-# also has no LSID.
-wcvp_ids <- wcvp_names %>%
-  filter(taxon_status == "Accepted") %>%
-  mutate(ipni_id = na_if(trimws(as.character(ipni_id)), "")) %>%
-  filter(!is.na(ipni_id))
+cat("WCFP published distribution table:", nrow(wcfp_distribution_published),
+    "rows,", n_distinct(wcfp_distribution_published$WCFP_ID), "taxa,",
+    n_distinct(wcfp_distribution_published$area_code_l3), "TDWG level 3 areas\n")
 
-# ----------------------------------------------------------------- #
-# 3b) Join wcfp_plantlist -> WCVP plant_name_id (by IPNI LSID) -> WCVP
-#     distribution table (one taxon can have many TDWG L3 areas, hence
-#     the one-to-many join).
-# ----------------------------------------------------------------- #
-wcfp_plantlist_ids <- wcfp_plantlist %>%
-  mutate(LSID_accepted = na_if(trimws(as.character(LSID_accepted)), "")) %>%
-  filter(!is.na(LSID_accepted)) %>%
-  left_join(wcvp_ids %>% select(ipni_id, plant_name_id),
-            by = c("LSID_accepted" = "ipni_id"), na_matches = "never") %>%
-  filter(!is.na(plant_name_id))
-
-cat("wcfp_plantlist species with a usable IPNI LSID matched to a WCVP plant_name_id:",
-    n_distinct(wcfp_plantlist_ids$WCFP_ID), "of", n_distinct(wcfp_plantlist$WCFP_ID), "\n")
-
-# A handful of WCFP_ID rows share the same plant_name_id (e.g. duplicate or
-# synonymous entries in wcfp_plantlist pointing to the same accepted WCVP
-# taxon) - not a strict one-row-per-taxon list. Flag them for review, and
-# join as many-to-many below so every WCFP_ID still gets its distribution
-# data rather than the join erroring out.
-duplicate_plant_name_ids <- wcfp_plantlist_ids %>%
-  count(plant_name_id, name = "n_wcfp_ids") %>%
-  filter(n_wcfp_ids > 1)
-
-if (nrow(duplicate_plant_name_ids) > 0) {
-  cat(nrow(duplicate_plant_name_ids), "WCVP plant_name_id(s) are shared by more than one WCFP_ID",
-      "(duplicate/synonymous entries in wcfp_plantlist) - see `duplicate_plant_name_ids`",
-      "and `wcfp_plantlist_dupes` for the affected rows.\n")
-}
-
-wcfp_plantlist_dupes <- wcfp_plantlist_ids %>%
-  semi_join(duplicate_plant_name_ids, by = "plant_name_id") %>%
-  select(WCFP_ID, LSID_accepted, taxon_name_accepted, plant_name_id) %>%
-  arrange(plant_name_id)
-
-wcvp_dist_tdwg3 <- wcfp_plantlist_ids %>%
-  select(WCFP_ID, LSID_accepted, taxon_name_accepted, family, plant_name_id) %>%
-  inner_join(wcvp_distribution, by = "plant_name_id", relationship = "many-to-many") %>%
-  filter(area_code_l3 != "") %>%
-  # Collapsed to the same two-level native / non-native scheme used for GRIN
-  # above, so the two sources' status fields are directly comparable. WCVP's
-  # native records stay "native"; introduced, extinct and location-doubtful
-  # all become "non-native". The raw introduced / extinct / location_doubtful
-  # flags are still carried in the columns selected below, so the original
-  # four-way distinction is not lost - only the summary field changes.
+wcvp_dist_tdwg3 <- wcfp_distribution_published %>%
+  # Restricted to the plantlist in play. For a full run this changes
+  # nothing; for a USER_TAXA_FILE run it is what keeps this source in step
+  # with the other two.
+  semi_join(wcfp_plantlist %>% distinct(WCFP_ID), by = "WCFP_ID") %>%
+  # Same normalisation the old path applied to the raw snapshot: a few
+  # records carry a lower-case TDWG code, which joins to nothing.
+  mutate(area_code_l3 = toupper(trimws(area_code_l3))) %>%
+  filter(!is.na(area_code_l3), area_code_l3 != "") %>%
+  # OVERWRITES the file's own occurrence_status. The published column is
+  # four-way (native / introduced / doubtful / extinct); this collapses it to
+  # the same two-level native / non-native scheme used for GRIN above, so the
+  # two sources' status fields stay directly comparable and every downstream
+  # popup, workbook column and legend keeps its existing meaning.
+  #
+  # Derived from the raw flags rather than from the text column, so it cannot
+  # drift if the file's wording changes. Those flags are carried through in
+  # the select() below, so the four-way distinction is still available.
   #
   # case_when (not if_else) to preserve the original NA handling: a record
   # with NA flags falls through to "native" rather than becoming NA.
@@ -619,6 +753,18 @@ if (!requireNamespace("openxlsx", quietly = TRUE)) install.packages("openxlsx")
 library(openxlsx)
 
 combined_output_dir <- outputs_dir   # set near the top; user runs get their own folder
+
+# Outputs are grouped by kind. combined_output_dir is kept as the parent for
+# anything not explicitly routed below.
+#
+# equal_earth_maps hangs off outputs_dir, not outputs_root: a USER_TAXA_FILE
+# run gets its own outputs_dir, and the Equal Earth maps belong in it with
+# everything else rather than being written back into the full-run folder.
+taxa_lists_dir    <- file.path(outputs_dir, "taxa_lists_and_summaries")
+equal_earth_dir   <- file.path(outputs_dir, "interactive_html_maps", "equal_earth_maps")
+for (.d in c(taxa_lists_dir, equal_earth_dir))
+  if (!dir.exists(.d)) dir.create(.d, recursive = TRUE)
+
 if (!dir.exists(combined_output_dir)) dir.create(combined_output_dir, recursive = TRUE)
 
 ## Self-contained: recomputes its own country polygons and occurrence-
@@ -629,11 +775,30 @@ country_polys <- ne_countries(scale = "medium", returnclass = "sf") %>%
   fold_breakaway_polygons() %>%
   st_transform(4326)
 
+## Natural Earth `admin` name -> ISO 3166-1 alpha-3.
+##
+## Declared here, with the polygons, because it is wanted in three places that
+## are far apart: the per-country workbook below, the popup titles, and the
+## popup Download button's own workbook. One lookup means all three agree.
+##
+## iso_a3_eh (the "everyone happy" variant) is the fallback for disputed
+## territories carrying the placeholder "-99", the same pattern used for GRIN's
+## country codes and for the TDWG level 4 ISO codes. A handful of entities have
+## no ISO code under either column - Somaliland, Kosovo, Northern Cyprus,
+## Siachen Glacier - and are simply absent, so callers get NA rather than a
+## made-up code.
+COUNTRY_ISO3 <- country_polys %>%
+  st_drop_geometry() %>%
+  transmute(admin, iso3 = if_else(is.na(iso_a3) | iso_a3 == "-99", iso_a3_eh, iso_a3)) %>%
+  filter(!is.na(iso3), nzchar(iso3), iso3 != "-99") %>%
+  distinct(admin, .keep_all = TRUE) %>%
+  { setNames(.$iso3, .$admin) }
+
 # ---------------------------------------- #
 #   Source 1: occurrences                  #
 # ---------------------------------------- #
 occ_country_sf <- st_as_sf(
-  readRDS(file.path(inputs_dir, "occurrences_land.rds")),
+  match_occurrences_to_wcfp(readRDS(file.path(inputs_dir, "data/occurrences_data/occurrences_land.rds")), "occurrences (analysis)"),
   coords = c("longitude", "latitude"), crs = 4326, remove = FALSE
 )
 occ_country_joined <- st_join(occ_country_sf, country_polys, join = st_within, left = FALSE)
@@ -645,8 +810,12 @@ occ_country_joined <- st_join(occ_country_sf, country_polys, join = st_within, l
 src_occurrences <- occ_country_joined %>%
   st_drop_geometry() %>%
   filter(!is.na(admin), !is.na(wcfp_name_match)) %>%
-  distinct(country = admin, taxon = wcfp_name_match, data_source) %>%
-  group_by(country, taxon) %>%
+  # WCFP_ID is carried through, not recomputed: the gate stamped it on, and
+  # dropping it here would leave this source keyed on a name string while the
+  # WCFP distribution source is keyed on an id.
+  distinct(country = admin, taxon = wcfp_name_match, WCFP_ID, data_source) %>%
+  # WCFP_ID is a function of taxon, so grouping by both cannot split a group.
+  group_by(country, taxon, WCFP_ID) %>%
   summarise(occurrences_data_source = paste(sort(unique(na.omit(data_source))), collapse = ", "),
             .groups = "drop")
 
@@ -996,8 +1165,14 @@ if (length(grin_still_unmatched) > 0) {
 # list of distinct statuses per (country, taxon), e.g. "native, non-native",
 # the same pattern src_wcfp uses below.
 src_grin <- bind_rows(grin_direct, grin_via_genus_species, grin_via_hyphen_alias) %>%
-  distinct(country, taxon, grin_status) %>%
-  group_by(country, taxon) %>%
+  # The three tiers RESOLVE a GRIN name to a WCFP name; this scopes the result
+  # to the published list, exactly as the occurrence source is scoped. On the
+  # current data it drops nothing - every GRIN taxon is already published -
+  # but without it the three sources could silently diverge in scope.
+  keep_published_taxa("taxon", "GRIN (country)") %>%
+  # WCFP_ID carried through from the gate - see src_occurrences above.
+  distinct(country, taxon, WCFP_ID, grin_status) %>%
+  group_by(country, taxon, WCFP_ID) %>%
   summarise(grin_status = paste(sort(unique(grin_status)), collapse = ", "), .groups = "drop")
 
 # ---------------------------------------- #
@@ -1043,12 +1218,12 @@ src_grin <- bind_rows(grin_direct, grin_via_genus_species, grin_via_hyphen_alias
 # option vs 51 75 c3 a9 62 65 63 in wcvp_distribution; with LATIN1 the two
 # match exactly and all four areas resolve (to Canada, Ecuador, Chile and
 # the Faroe Islands respectively).
-level3_shp <- st_read(file.path(inputs_dir, "level3/level3.shp"), quiet = TRUE,
+level3_shp <- st_read(file.path(inputs_dir, "TDWG_L3_L4/level3/level3.shp"), quiet = TRUE,
                       options = "ENCODING=LATIN1") %>%
   st_drop_geometry() %>%
   distinct(LEVEL3_COD, LEVEL3_NAM)
 
-level4 <- st_read(file.path(inputs_dir, "level4.geojson"), quiet = TRUE) %>%
+level4 <- st_read(file.path(inputs_dir, "TDWG_L3_L4/level4/level4.geojson"), quiet = TRUE) %>%
   st_drop_geometry() %>%
   distinct(Level3_cod, ISO_Code)
 
@@ -1164,8 +1339,10 @@ wcvp_country_long <- wcvp_country_raw %>%
 # rather than collapsing to a single value.
 src_wcfp <- wcvp_country_long %>%
   filter(country %in% country_polys$admin) %>%
-  distinct(country, taxon = wcfp_name_match, occurrence_status) %>%
-  group_by(country, taxon) %>%
+  # This source has carried WCFP_ID all along - it is the published file's own
+  # key. Kept here so all three sources expose the same identifier.
+  distinct(country, taxon = wcfp_name_match, WCFP_ID, occurrence_status) %>%
+  group_by(country, taxon, WCFP_ID) %>%
   summarise(occurrence_status = paste(sort(unique(occurrence_status)), collapse = ", "), .groups = "drop")
 
 # ---------------------------------------- #
@@ -1188,7 +1365,7 @@ summary_wb <- createWorkbook()
 addWorksheet(summary_wb, "Summary")
 writeData(summary_wb, "Summary", source_summary, headerStyle = createStyle(textDecoration = "bold"))
 setColWidths(summary_wb, "Summary", cols = 1:3, widths = c(18, 18, 22))
-summary_xlsx_path <- file.path(combined_output_dir, "WCFP_data_source_summary_counts.xlsx")
+summary_xlsx_path <- file.path(taxa_lists_dir, "counts_food-plants_distributions_by-data-source.xlsx")
 saveWorkbook(summary_wb, summary_xlsx_path, overwrite = TRUE)
 message("Data source summary counts saved to: ", summary_xlsx_path)
 
@@ -1209,6 +1386,11 @@ combined_long <- bind_rows(
 # to a comma-separated list of distinct statuses ("native, non-native") when
 # the source reports both within the same country.
 combined <- combined_long %>%
+  # NOT grouped by WCFP_ID, deliberately. The three source tables each carry
+  # the id, but the confirmed tables get it from attach_accepted_name() below,
+  # which serves country, L4 and L3 alike. Carrying it through here as well
+  # would give combined_confirmed two WCFP_ID columns once that helper runs,
+  # and dplyr would silently rename them WCFP_ID.x / WCFP_ID.y.
   group_by(country, taxon) %>%
   summarise(
     data_source_occurrences  = if (any(!is.na(data_source_occurrences))) "Y" else NA_character_,
@@ -1238,17 +1420,45 @@ combined_confirmed <- combined %>%
 # workbook and leaflet map below - kept as separate columns rather than
 # replacing `taxon`, which is still used for grouping/joins throughout
 # this section.
-wcfp_taxon_lookup <- wcfp_plantlist %>%
+# From the PUBLISHED WCFP.xlsx, like the Red List categories and the three
+# source gates - the accepted name and its authority are what get printed in
+# every workbook and popup, so they should come from the same place as
+# everything else.
+#
+# Keyed on the normalised accepted name: the published file has no
+# wcfp_name_match column, that being a derived column of the working copy.
+#
+# Checked before switching: across all 26,622 shared taxa both the accepted
+# name and the authority are byte-identical between the two files, so this
+# changes no output. It removes a second source of truth, not a discrepancy.
+wcfp_taxon_lookup <- wcfp_reference %>%
   transmute(
-    wcfp_name_match = str_squish(wcfp_name_match),
+    tx_key = normalise_taxon_name(taxon_name_accepted),
+    WCFP_ID,
     taxon_name_accepted,
     taxon_authors_accepted
   ) %>%
-  filter(!is.na(wcfp_name_match)) %>%
-  distinct(wcfp_name_match, .keep_all = TRUE)
+  filter(!is.na(tx_key), nzchar(tx_key)) %>%
+  distinct(tx_key, .keep_all = TRUE)
 
-combined_confirmed <- combined_confirmed %>%
-  left_join(wcfp_taxon_lookup, by = c("taxon" = "wcfp_name_match"))
+# Joining on the normalised key, so this is the only place that knows how
+# `taxon` relates to the published name.
+#
+# NOT called attach_taxon_names(): that name is already taken further down by a
+# different helper which also derives `taxa`/`authority` display columns. Two
+# functions of the same name would not error - the later definition simply
+# wins - so the collision would have shown up as the wrong columns much later.
+attach_accepted_name <- function(df) {
+  n0 <- nrow(df)
+  out <- df %>%
+    mutate(tx_key = normalise_taxon_name(taxon)) %>%
+    left_join(wcfp_taxon_lookup, by = "tx_key") %>%
+    select(-tx_key)
+  stopifnot(nrow(out) == n0)
+  out
+}
+
+combined_confirmed <- attach_accepted_name(combined_confirmed)
 
 ## ------------------------------------------------------------------ ##
 ## IUCN Red List category, from wcfp_plantlist$red_list_category_code.
@@ -1282,22 +1492,34 @@ RL_LABEL <- c(
   NE = "Not Evaluated"
 )
 
-wcfp_redlist_lookup <- wcfp_plantlist %>%
+# Read from the PUBLISHED WCFP.xlsx, the same file the occurrence and GRIN
+# sources are matched against, so a taxon's category cannot depend on which
+# copy of the list a given part of the run happened to consult.
+#
+# Keyed on the normalised accepted name, because the published file has no
+# wcfp_name_match column - that is a derived column of the working copy.
+#
+# On the current data this changes nothing: all 26,622 shared taxa carry
+# identical codes in both files. The working copy was patched earlier in this
+# project to fill two blank categories using values taken from this very
+# release, which is why they already agree - and which makes that patch
+# redundant now.
+wcfp_redlist_lookup <- wcfp_reference %>%
   transmute(
-    wcfp_name_match = str_squish(wcfp_name_match),
-    # as.character() is deliberate: wcfp_plantlist is read with read_excel's
-    # default guess_max = 1000, and this column is sparse (10,909 non-NA of
-    # 26,632), so a run of empty leading cells could type it as logical.
+    rl_key  = normalise_taxon_name(taxon_name_accepted),
+    # as.character() is deliberate: the file is read with read_excel's default
+    # guess_max = 1000, and this column is sparse, so a run of empty leading
+    # cells could type it as logical.
     .raw    = toupper(str_squish(as.character(red_list_category_code))),
     rl_code = coalesce(unname(RL_RECODE[.raw]), .raw),
     # Blank or missing becomes NE (Not Evaluated), IUCN's own code for it.
     rl_code = if_else(is.na(rl_code) | !nzchar(rl_code), "NE", rl_code)
   ) %>%
-  filter(!is.na(wcfp_name_match), nzchar(wcfp_name_match)) %>%
+  filter(!is.na(rl_key), nzchar(rl_key)) %>%
   mutate(.sev = match(rl_code, RL_SEVERITY)) %>%
-  arrange(wcfp_name_match, .sev) %>%
-  distinct(wcfp_name_match, .keep_all = TRUE) %>%
-  select(wcfp_name_match, rl_code)
+  arrange(rl_key, .sev) %>%
+  distinct(rl_key, .keep_all = TRUE) %>%
+  select(rl_key, rl_code)
 
 # Fails loudly rather than silently bucketing an unknown code into "Not
 # assessed", which would understate threat.
@@ -1312,9 +1534,18 @@ if (length(.rl_unknown) > 0) {
 # cell. attach_redlist() is applied to each of the three confirmed tables so
 # the country, L4 and L3 workbooks all resolve the category identically.
 attach_redlist <- function(df) {
-  df %>%
-    left_join(wcfp_redlist_lookup, by = c("taxon" = "wcfp_name_match")) %>%
-    mutate(rl_code = coalesce(rl_code, "NE"))
+  n0 <- nrow(df)
+  out <- df %>%
+    mutate(rl_key = normalise_taxon_name(taxon)) %>%
+    left_join(wcfp_redlist_lookup, by = "rl_key") %>%
+    mutate(rl_code = coalesce(rl_code, "NE")) %>%
+    select(-rl_key)
+  # The join key is normalised on both sides, so an unmatched taxon means it is
+  # genuinely absent from the published list, not a formatting mismatch. Row
+  # count is asserted because a many-to-many join here would inflate every
+  # richness count downstream without any other symptom.
+  stopifnot(nrow(out) == n0)
+  out
 }
 
 combined_confirmed <- attach_redlist(combined_confirmed)
@@ -1357,9 +1588,17 @@ for (ctry in qualifying_countries) {
   sheet_name <- make_sheet_name(ctry, used_sheet_names)
   used_sheet_names <- c(used_sheet_names, sheet_name)
 
+  # The country and its ISO3 are repeated on every row rather than left implicit
+  # in the sheet name, matching the L3 and L4 workbooks: sheet names are
+  # truncated to 31 characters and de-duplicated, so they are not a reliable
+  # record of which area a sheet is, and a sheet copied out of the workbook
+  # would otherwise lose its country entirely.
   country_data <- combined_confirmed %>%
     filter(country == ctry) %>%
     transmute(
+      country      = ctry,
+      country_iso3 = unname(COUNTRY_ISO3[ctry]),
+      WCFP_ID,
       taxa = coalesce(taxon_name_accepted, taxon),
       authority = taxon_authors_accepted,
       iucn_red_list_category_code = rl_code,
@@ -1371,11 +1610,11 @@ for (ctry in qualifying_countries) {
   addWorksheet(wb, sheet_name)
   writeData(wb, sheet_name, country_data, headerStyle = createStyle(textDecoration = "bold"))
   freezePane(wb, sheet_name, firstRow = TRUE)
-  setColWidths(wb, sheet_name, cols = 1:10,
-               widths = c(38, 22, 16, 24, 22, 22, 14, 20, 14, 20))
+  setColWidths(wb, sheet_name, cols = 1:13,
+               widths = c(30, 12, 10, 38, 22, 16, 24, 22, 22, 14, 20, 14, 20))
 }
 
-combined_xlsx_path <- file.path(combined_output_dir, "WCFP_taxa-lists_by_country_2plus_sources.xlsx")
+combined_xlsx_path <- file.path(taxa_lists_dir, "taxa-lists_food-plants_distributions_by-country_2-or-more-sources.xlsx")
 saveWorkbook(wb, combined_xlsx_path, overwrite = TRUE)
 message("Combined per-country taxa workbook saved to: ", combined_xlsx_path)
 
@@ -1398,7 +1637,8 @@ message("Combined per-country taxa workbook saved to: ", combined_xlsx_path)
 # ==============================================================================
 # OUTPUT DIRECTORY
 # ==============================================================================
-output_dir <- outputs_dir            # set near the top; user runs get their own folder
+output_dir <- file.path(outputs_dir, "figures_static_maps")  # static PNG/PDF only
+if (!dir.exists(output_dir)) dir.create(output_dir, recursive = TRUE)
 if (!dir.exists(output_dir)) dir.create(output_dir, recursive = TRUE)
 
 # ==============================================================================
@@ -1448,53 +1688,12 @@ message("Total countries with data: ", nrow(country_richness))
 
 
 
-# ==============================================================================
-# VERSION 1 — Simple style (magma, no graticules)
-# ==============================================================================
-p1 <- ggplot(map_data) +
-  geom_sf(aes(fill = richness), color = "gray40", size = 0.15) +
-  scale_fill_viridis_c(
-    option = "magma",
-    direction = -1,
-    na.value = "gray95",
-    name = "Number of food plant taxa"
-  ) +
-  theme(
-    panel.grid = element_line(color = "transparent"),
-    panel.background = element_rect(fill = "white", color = NA),
-    plot.background = element_rect(fill = "white", color = NA),
-    axis.title = element_blank(),
-    axis.text = element_blank(),
-    axis.ticks = element_blank(),
-    legend.position = c(0.03, 0.05),
-    legend.justification = c(0, 0),
-    legend.background = element_rect(fill = "white", color = "black"),
-    legend.key = element_rect(fill = "white", color = NA),
-    legend.box.margin = margin(0, 0, 0, 0)
-  )
-
-print(p1)
-
-# Save PNG
-output_file_v1_png <- file.path(output_dir, "WCFP_taxa_distribution_country_map_v1_simple.png")
-ragg::agg_png(output_file_v1_png, width = 12, height = 7, units = "in", res = 300)
-print(p1)
-dev.off()
-message("V1 PNG saved to: ", output_file_v1_png)
-
-# Save PDF
-output_file_v1_pdf <- file.path(output_dir, "WCFP_taxa_distribution_country_map_v1_simple.pdf")
-ggsave(
-  filename = output_file_v1_pdf,
-  plot     = p1,
-  width    = 12,
-  height   = 7,
-  device   = cairo_pdf,
-  bg       = "white"
-)
-message("V1 PDF saved to: ", output_file_v1_pdf)
-
-message("V1 map saved to: ", output_dir)
+# The static country figure is no longer built here. All three static maps -
+# country, level 3 and level 4 - are built together by one function at the END
+# of this file, so that they share a projection, a palette and a legend and
+# cannot drift apart. See "STATIC MAPS" there.
+#
+# `map_data` above is still what the country one draws.
 
 
 
@@ -1653,13 +1852,12 @@ map_onrender_common_js <- "
       '.leaflet-control.wcfp-mapsource{margin:0 !important;' +
       'border:none !important;box-shadow:none !important;' +
       'border-radius:0 !important;}' +
-      // Leaflet's scale bar is 11px text inside a 2px rule by default, which
-      // looks undersized next to the enlarged title and legend. Widening it
-      // via scaleBarOptions(maxWidth) alone would not touch the type, so the
-      // text and rule are scaled here.
-      '.leaflet-control-scale-line{font-size:15px !important;' +
-      'line-height:1.5 !important;padding:4px 9px 3px !important;' +
-      'border-width:3px !important;}' +
+      // No rule for .leaflet-control-scale-line any more: that styled
+      // Leaflet's OWN scale control, which nothing uses now. The Equal Earth
+      // maps draw their own scale bar (ee_scalebar_js) with inline styles,
+      // because L.CRS.Simple makes Leaflet's control report map units as
+      // metres. This block is a plain string, not a paste0, so it also cannot
+      // carry the UI_PX_* constants.
       // Restores Leaflet's own rule for the lifted popup pane - see
       // liftPopupPane() below. Leaflet fades popups in with
       //   .leaflet-fade-anim .leaflet-popup           {opacity:0}
@@ -1677,6 +1875,33 @@ map_onrender_common_js <- "
     return true;
   }
   if (!moveZoomAboveScale()) { setTimeout(moveZoomAboveScale, 200); }
+
+  // Thousands separators on the scale bar - Leaflet writes '10000 km'.
+  // Leaflet rewrites the label itself on every move, so a one-off pass would
+  // be undone by the first pan; a MutationObserver re-applies it instead. The
+  // 'out !== t' guard is what stops our own write from retriggering the
+  // observer forever. \\d{4,} leaves '200 km' alone.
+  function commifyScaleBar() {
+    var lines = el.querySelectorAll('.leaflet-control-scale-line');
+    for (var i = 0; i < lines.length; i++) {
+      var t = lines[i].textContent;
+      var out = t.replace(/\\d{4,}/g, function (n) {
+        return n.replace(/\\B(?=(\\d{3})+(?!\\d))/g, ',');
+      });
+      if (out !== t) { lines[i].textContent = out; }
+    }
+  }
+  function watchScaleBar() {
+    var sc = el.querySelector('.leaflet-control-scale');
+    if (!sc) { return false; }
+    commifyScaleBar();
+    if (window.MutationObserver) {
+      new MutationObserver(commifyScaleBar).observe(
+        sc, { childList: true, subtree: true, characterData: true });
+    }
+    return true;
+  }
+  if (!watchScaleBar()) { setTimeout(watchScaleBar, 200); }
 
   // Sit the map-source strip on the bottom border immediately LEFT of
   // Leaflet's attribution link. Both live in the .leaflet-bottom.leaflet-right
@@ -1806,13 +2031,24 @@ zoom_in_bbox <- function(bb, frac = 0.06) {
   c(xmin = cx - hw, ymin = cy - hh, xmax = cx + hw, ymax = cy + hh)
 }
 
-# Shared <h4> heading for all four interactive maps. Defined once so the
+# Shared <h4> heading for all nine interactive maps. Defined once so the
 # wording cannot drift between them; each map's own subtitle underneath is
 # what distinguishes it.
+## ------------------------------------------------------------------ ##
+## ONE TYPE SCALE for every control box on the interactive maps - title,
+## hint, layers control, legend, source strip, search box and popups.
+## These were six different hard-coded sizes spread across a dozen strings,
+## which is why the boxes did not look like a set.
+## ------------------------------------------------------------------ ##
+UI_PX_HEADING  <- 20   # the map title itself
+UI_PX_SUB      <- 13   # the subtitle under the title
+UI_PX_BOXTITLE <- 13   # a bold heading inside a control box
+UI_PX_BODY     <- 12   # normal text inside a control box
+UI_PX_SMALL    <- 11   # secondary text: legend subtitle, popup tables
+
 MAP_HEADING <- paste0(
-  "<h4 style='margin:0; font-size:20px; line-height:1.25; color:#000;'>",
-  "Geographic distribution of food plant taxa in the World Checklist ",
-  "of Food Plants (2026)</h4>"
+  "<h4 style='margin:0; font-size:", UI_PX_HEADING, "px; line-height:1.25; color:#000;'>",
+  "Global geographic distribution of food plant taxa</h4>"
 )
 
 ## ------------------------------------------------------------------ ##
@@ -1828,10 +2064,10 @@ MAP_HEADING <- paste0(
 ## palette the polygons are filled with, so the legend cannot drift away
 ## from the map.
 ##
-## Labels are placed by value (absolute top:%) rather than spaced evenly
-## down the bar. pretty() breaks do not necessarily sit at even fractions
-## of the bar's range, so spacing them evenly would put the numbers next
-## to the wrong colours.
+## Four to six round labels, each with a tick joining it to the colour it
+## names - see legend_label_values() for how the step is chosen. Labels are
+## positioned by value (absolute top:%), which is what guarantees a number
+## sits next to its own colour rather than near it.
 ## ------------------------------------------------------------------ ##
 ## `subtitle` is for the Red List legends. Those swap a different legend in
 ## per layer, so they need the layer name on the legend - but the bold title
@@ -1842,6 +2078,33 @@ MAP_HEADING <- paste0(
 # covering a visible slice of ocean on every map. Every dimension below is
 # driven from bar_h/bar_w and the two font sizes, so the whole block can be
 # rescaled from here without hunting through the markup.
+# Picks the numbers that get printed down the bar: a round step, chosen so the
+# bar carries roughly `target` of them.
+#
+# Forcing EXACTLY five was tried and rejected. Quartering a real range gives
+# 1,125 and 375 on the Not-threatened layer and 3,250 on the country map -
+# evenly spaced, but nobody reads a map legend in quarters. So instead the
+# usual round steps are the candidates, and the one landing nearest `target`
+# labels wins. Ties go to a step that divides the top of the bar, so the
+# maximum itself gets a number rather than sitting above the highest label.
+#
+# Steps are floored at 1: these are counts of taxa, and a step of 0.25 would
+# print a quarter of a taxon on the narrow Red List layers.
+legend_label_values <- function(lo, hi, target = 5) {
+  if (!is.finite(lo) || !is.finite(hi) || hi <= lo) return(numeric(0))
+  raw   <- (hi - lo) / (target - 1)
+  cands <- sort(unique(pmax(1, round(c(1, 2, 2.5, 4, 5, 10) * 10^floor(log10(raw))))))
+  labs  <- lapply(cands, function(s) {
+    from <- ceiling(lo / s) * s
+    to   <- floor(hi / s) * s
+    if (from > to) numeric(0) else seq(from, to, by = s)
+  })
+  pick <- order(abs(lengths(labs) - target), !((hi %% cands) == 0),
+                abs(cands - raw))[1]
+  out <- rev(labs[[pick]])
+  if (length(out) < 2) c(hi, lo) else out
+}
+
 build_gradient_legend <- function(pal, breaks, title = "Number of food plant taxa",
                                   subtitle = NULL, bar_h = 105, bar_w = 15) {
   breaks <- sort(unique(breaks[is.finite(breaks)]), decreasing = TRUE)
@@ -1851,30 +2114,50 @@ build_gradient_legend <- function(pal, breaks, title = "Number of food plant tax
 
   # 12 stops is a visually smooth ramp at this bar height.
   stops <- pal(seq(hi, lo, length.out = 12))
+
+  # Only the ENDS of `breaks` matter now - the label values are rechosen from
+  # the range, so callers can keep passing whatever pretty() gave them.
+  vals <- legend_label_values(lo, hi)
+  if (length(vals) < 2) return("")
+  pct <- (hi - vals) / (hi - lo) * 100
+
+  # Ticks live inside the bar and stick out of its LEFT edge into the flex gap,
+  # so a tick and its number are positioned from the same percentage and cannot
+  # drift apart.
+  ticks <- paste0(
+    "<span style='position:absolute; left:-4px; top:", round(pct, 2), "%; ",
+    "width:4px; height:1px; background:#555; transform:translateY(-50%);'></span>",
+    collapse = ""
+  )
   bar <- paste0(
-    "<div style='width:", bar_w, "px; height:", bar_h, "px; border:1px solid #999; ",
-    "background:linear-gradient(to bottom,", paste(stops, collapse = ","), ");'></div>"
+    "<div style='position:relative; width:", bar_w, "px; height:", bar_h,
+    "px; border:1px solid #999; ",
+    "background:linear-gradient(to bottom,", paste(stops, collapse = ","), ");'>",
+    ticks, "</div>"
   )
 
-  pct  <- (hi - breaks) / (hi - lo) * 100
+  # Numbers sit to the LEFT of the bar, pinned by their right edge so they are
+  # flush against it. Left-pinning would leave a ragged gap, since "500" and
+  # "3,500" are different widths.
   labs <- paste0(
-    "<span style='position:absolute; left:0; top:", round(pct, 2), "%; ",
+    "<span style='position:absolute; right:0; top:", round(pct, 2), "%; ",
     "transform:translateY(-50%); white-space:nowrap;'>",
-    scales::comma(breaks), "</span>",
+    scales::comma(vals), "</span>",
     collapse = ""
   )
 
   paste0(
     "<div style='background:white; padding:7px 9px; border-radius:4px; ",
-    "box-shadow:0 0 4px rgba(0,0,0,0.3); font-size:11px; color:#333;'>",
-    "<div style='font-weight:bold; font-size:13px; margin-bottom:",
+    "box-shadow:0 0 4px rgba(0,0,0,0.3); font-size:", UI_PX_BODY, "px; color:#333;'>",
+    "<div style='font-weight:bold; font-size:", UI_PX_BOXTITLE, "px; margin-bottom:",
     if (is.null(subtitle)) "5px" else "1px", ";'>", title, "</div>",
     if (is.null(subtitle)) "" else
-      paste0("<div style='font-size:10px; color:#555; margin-bottom:5px;'>",
+      paste0("<div style='font-size:", UI_PX_SMALL, "px; color:#555; margin-bottom:5px;'>",
              subtitle, "</div>"),
-    "<div style='display:flex; gap:7px; align-items:flex-start;'>",
-    bar,
+    "<div style='display:flex; gap:7px; align-items:flex-start; ",
+    "justify-content:flex-end;'>",
     "<div style='position:relative; height:", bar_h, "px; min-width:42px;'>", labs, "</div>",
+    bar,
     "</div></div>"
   )
 }
@@ -1957,7 +2240,19 @@ escape_attr <- function(x) gsub('"', "&quot;", escape_html(x), fixed = TRUE)
 # and the popup JS takes its column count from the layer's `headers` entry, so
 # R and the browser cannot drift out of step.
 build_layer_export <- function(df, detail_cols = "info") {
-  val_cols <- c("taxa", "authority", detail_cols)
+  # wcfp_id is a FIXED third column, not a detail column. Adding it to
+  # detail_cols instead would have meant editing all nine payloads' `headers`
+  # entries in step; as a fixed column the popup JS can render it for every
+  # layer from one place, and the two cannot drift apart.
+  val_cols <- c("taxa", "authority", "WCFP_ID", detail_cols)
+  # Named up front rather than left to select()'s own error, which reports the
+  # missing column without saying which layer's table it belongs to - and this
+  # runs ~20 minutes into a job.
+  missing <- setdiff(c("area_key", val_cols), names(df))
+  if (length(missing))
+    stop("build_layer_export(): table is missing column(s) ",
+         paste(missing, collapse = ", "), "; it has ",
+         paste(names(df), collapse = ", "))
   d <- df %>%
     select(all_of(c("area_key", val_cols))) %>%
     filter(!is.na(area_key), nzchar(as.character(area_key)), !is.na(taxa)) %>%
@@ -1980,7 +2275,9 @@ build_layer_export <- function(df, detail_cols = "info") {
 # resolve display name + authority the same way the combined tables already do.
 attach_taxon_names <- function(df) {
   df %>%
-    left_join(wcfp_taxon_lookup, by = c("taxon" = "wcfp_name_match")) %>%
+    mutate(tx_key = normalise_taxon_name(taxon)) %>%
+    left_join(wcfp_taxon_lookup, by = "tx_key") %>%
+    select(-tx_key) %>%
     mutate(taxa      = coalesce(taxon_name_accepted, taxon),
            authority = coalesce(taxon_authors_accepted, ""))
 }
@@ -2010,7 +2307,7 @@ attach_taxon_names <- function(df) {
 # the by-source maps, below the "Distribution data source" layer toggle).
 build_click_hint <- function(txt) {
   paste0("<div style='background:white; padding:4px 10px; border-radius:4px; ",
-         "font-size:12px; color:#333; box-shadow:0 0 4px rgba(0,0,0,0.3);'>",
+         "font-size:", UI_PX_BODY, "px; color:#333; box-shadow:0 0 4px rgba(0,0,0,0.3);'>",
          txt, "</div>")
 }
 
@@ -2029,18 +2326,27 @@ click_hint_l4_bs      <- build_click_hint(paste0(
   "Select one distribution data source - layers are exclusive, not stacked<br>",
   "Click map to view/download food plants taxa list per TDWG Level-4 botanical area, for the selected data source"))
 
-build_map_source_strip <- function(src) {
+# `projection` has NO DEFAULT on purpose. Every map this workflow now produces
+# is Equal Earth, and the strip states the projection to the reader - so a
+# default would be a value that gets printed without anyone choosing it. The
+# one caller (ee_strip, in the Equal Earth section) passes it explicitly.
+#
+# This used to default to "Web Mercator (EPSG:3857)", which is what leaflet
+# renders in unless its CRS is overridden. The Mercator maps were removed, and
+# the Equal Earth maps override the CRS, so that value is no longer true of
+# anything here.
+build_map_source_strip <- function(src, projection) {
   paste0(
     "<div style='background:rgba(110,110,110,0.35); color:#1a1a1a; ",
-    "font-size:12px; padding:3px 10px; white-space:nowrap;'>",
-    "<b>Map data source:</b> ", src, "</div>"
+    "font-size:", UI_PX_BODY, "px; padding:3px 10px; white-space:nowrap;'>",
+    "<b>Map data source:</b> ", src,
+    " &nbsp;&middot;&nbsp; <b>Projection:</b> ", projection, "</div>"
   )
 }
 
-# Country maps draw country_polys/continent_polys (both Natural Earth);
-# the L4 maps draw level4_sf/level3_sf (both TDWG WGSRPD).
-map_source_strip_country <- build_map_source_strip("Natural Earth")
-map_source_strip_l4      <- build_map_source_strip("TDWG WGSRPD Level-3 / Level-4")
+# The strips themselves are built in the Equal Earth section, by ee_strip(),
+# which supplies the projection. Country maps draw country_polys/continent_polys
+# (both Natural Earth); the L4 maps draw level4_sf/level3_sf (both TDWG WGSRPD).
 
 # Leaflet's popup maxWidth defaults to 300px, which would clip the taxa
 # table however wide the table's own CSS is - so the width has to be raised
@@ -2106,6 +2412,16 @@ function(el, x, data) {
   var D      = data || {};
   var LAYERS = D.layers || {};
   var NAMES  = D.areaNames || {};
+  var CODES  = D.areaCodes || {};
+  // Number of TRAILING detail columns that belong in the downloaded sheet but
+  // not in the popup table. The popup has limited width and these are the
+  // long, list-shaped fields - a level 3 area's level 4 sub-areas, a level 4
+  // area's parent - which are wanted in the file and only clutter on screen.
+  var DLONLY = D.dlOnly || {};
+  function dlOnlyFor(layer) {
+    var n = DLONLY[layer];
+    return (typeof n === 'number' && n > 0) ? n : 0;
+  }
   var HDRS   = D.headers || {};
   // Layer labels that should NOT be repeated as the grey sub-heading in the
   // popup. The combined layer is listed because 'Confirmed by >=2 data
@@ -2128,6 +2444,25 @@ function(el, x, data) {
     return L[area] || [];
   }
   function nameFor(area) { return NAMES[area] || area; }
+  // The area's code, already formatted by R as the text inside the brackets -
+  // 'ISO3: IND' on a country map, 'L3: IND' or 'L3-L4: AUT-AU' on a TDWG one.
+  // Returns '' when an area has no code, e.g. a country with no ISO 3166-1
+  // entry, so the title simply omits the brackets rather than showing empty
+  // ones.
+  function codeFor(area) {
+    var c = CODES[area];
+    return c ? \" <span style='font-weight:normal; color:#555;'>(\" +
+               esc(c) + ')</span>' : '';
+  }
+  // The same code without its scheme label - 'IND' rather than 'ISO3: IND' -
+  // for the downloaded sheet's own column. substring beats a regex here: no
+  // escaping to get wrong inside this string literal.
+  function rawCodeFor(area) {
+    var c = CODES[area];
+    if (!c) { return ''; }
+    var i = c.indexOf(': ');
+    return i < 0 ? c : c.substring(i + 2);
+  }
   // A layer's headers entry is either one string (single detail column) or an
   // array of them. Normalising to an array here is what lets the table below
   // render 1 or 2 detail columns from the same code.
@@ -2145,9 +2480,12 @@ function(el, x, data) {
     var rows = rowsFor(layer, area);
     var hdrs = headersFor(layer);
     var nm   = nameFor(area);
-    var aoa  = [['Area', 'Layer', 'Taxa', 'Authority'].concat(hdrs)];
+    // 'Area code' carries whatever scheme this map uses - ISO3 on the country
+    // maps, the TDWG code on the level 3 and level 4 ones - so a downloaded
+    // sheet identifies its area unambiguously and not just by a display name.
+    var aoa  = [['Area', 'Area code', 'Layer', 'Taxa', 'Authority', 'WCFP_ID'].concat(hdrs)];
     for (var i = 0; i < rows.length; i++) {
-      aoa.push([nm, layer].concat(rows[i]));
+      aoa.push([nm, rawCodeFor(area), layer].concat(rows[i]));
     }
     var ws = XLSX.utils.aoa_to_sheet(aoa);
     var wb = XLSX.utils.book_new();
@@ -2171,14 +2509,27 @@ function(el, x, data) {
     var out  = [];
     out.push(\"<div style='min-width:500px; font-family:sans-serif;'>\");
     out.push(\"<div style='display:flex; justify-content:space-between; align-items:center; gap:8px;'>\");
-    out.push('<span><b>' + esc(nameFor(area)) + '</b> &mdash; ' +
+    out.push('<span><b>' + esc(nameFor(area)) + '</b>' + codeFor(area) + ' &mdash; ' +
              rows.length.toLocaleString() + ' food plants taxa' +
              (showLabel(layer)
-                ? \"<br><span style='font-size:10px; color:#666;'>\" + esc(layer) + '</span>'
+                ? \"<br><span style='font-size:11px; color:#666;'>\" + esc(layer) + '</span>'
                 : '') +
              '</span>');
-    out.push(\"<button class='wcfp-dl' style='font-size:10px; padding:2px 6px; \" +
-             \"cursor:pointer; white-space:nowrap;'>Download</button>\");
+    // margin-right pulls the button in off the popup's right edge - the row is
+    // justify-content:space-between, so without it the button sits flush
+    // against the border.
+    // The glyph is an inline SVG rather than a font character: the popup has no
+    // icon font to depend on, and stroke='currentColor' means it inherits the
+    // button's white text colour automatically.
+    out.push(\"<button class='wcfp-dl' style='font-size:11px; padding:4px 10px; \" +
+             \"margin-right:12px; cursor:pointer; white-space:nowrap; \" +
+             \"display:inline-flex; align-items:center; border-radius:4px; \" +
+             \"background:#2F86F6; color:#ffffff; border:1px solid #1B6AD0;'>\" +
+             \"<svg width='11' height='11' viewBox='0 0 24 24' fill='none' \" +
+             \"stroke='currentColor' stroke-width='2.4' stroke-linecap='round' \" +
+             \"stroke-linejoin='round' style='margin-right:6px;'>\" +
+             \"<path d='M12 3v12'/><path d='M7 12l5 5 5-5'/><path d='M4 21h16'/>\" +
+             \"</svg>Download</button>\");
     out.push('</div>');
     // overflow:auto (not just overflow-y) so a pathologically long name
     // scrolls horizontally rather than bursting the popup.
@@ -2186,18 +2537,26 @@ function(el, x, data) {
     out.push(\"<table style='font-size:11px; border-collapse:collapse; width:100%;'>\");
     // Only the final detail column drops the right padding, whatever the
     // column count, so a 2-detail Red List table is spaced like a 1-detail one.
-    function tdFor(i) { return (i === hdrs.length - 1) ? tdLast : tdRest; }
-    var head = '<td ' + tdTaxa + '>Taxa</td>' + '<td ' + tdRest + '>Authority</td>';
-    for (var h = 0; h < hdrs.length; h++) {
+    // nShow drops the download-only tail. tdFor keys off it, not hdrs.length,
+    // so the LAST VISIBLE column is the one that loses its right padding.
+    var nShow = hdrs.length - dlOnlyFor(layer);
+    function tdFor(i) { return (i === nShow - 1) ? tdLast : tdRest; }
+    // WCFP_ID is a fixed column between Authority and the per-layer details -
+    // see build_layer_export(). Row values follow the same order, so the
+    // detail loop below starts at index 3, not 2.
+    var head = '<td ' + tdTaxa + '>Taxa</td>' + '<td ' + tdRest + '>Authority</td>' +
+               '<td ' + tdRest + '>WCFP_ID</td>';
+    for (var h = 0; h < nShow; h++) {
       head += '<td ' + tdFor(h) + '>' + esc(hdrs[h]) + '</td>';
     }
     out.push(\"<tr style='font-weight:bold; border-bottom:1px solid #999; text-align:left;'>\" +
              head + '</tr>');
     for (var j = 0; j < rows.length; j++) {
       var tr = '<td ' + tdTaxa + '><i>' + esc(rows[j][0]) + '</i></td>' +
-               '<td ' + tdRest + '>' + esc(rows[j][1]) + '</td>';
-      for (var h2 = 0; h2 < hdrs.length; h2++) {
-        tr += '<td ' + tdFor(h2) + '>' + esc(rows[j][2 + h2]) + '</td>';
+               '<td ' + tdRest + '>' + esc(rows[j][1]) + '</td>' +
+               '<td ' + tdRest + '>' + esc(rows[j][2]) + '</td>';
+      for (var h2 = 0; h2 < nShow; h2++) {
+        tr += '<td ' + tdFor(h2) + '>' + esc(rows[j][3 + h2]) + '</td>';
       }
       out.push(\"<tr style='border-bottom:1px solid #eee;'>\" + tr + '</tr>');
     }
@@ -2252,10 +2611,262 @@ function(el, x, data) {
       for (var k = 0; k < hosts.length; k++) { fill(hosts[k]); }
     }).observe(pane, { childList: true, subtree: true });
   }
+
+  // ---------------------------------------------------------------- //
+  //   Taxon search                                                    //
+  // ---------------------------------------------------------------- //
+  // Lives here rather than in the shared onRender block because it needs the
+  // payload: the same per-area taxa lists the popups are built from are what
+  // makes 'which areas is this taxon in?' answerable without another lookup
+  // table.
+  //
+  // Two indexes, both built lazily on first use and cached per layer. Eagerly
+  // indexing every layer at load would walk ~275k rows on the Red List maps
+  // before the map is even interactive.
+  var TAXIDX = {};   // layer -> { lowercase taxon -> [area codes] }
+  var DISPLAY = {};  // layer -> { lowercase taxon -> original-case name }
+
+  function indexLayer(layer) {
+    if (TAXIDX[layer]) { return; }
+    var idx = {}, disp = {}, L = LAYERS[layer] || {};
+    for (var area in L) {
+      if (!Object.prototype.hasOwnProperty.call(L, area)) { continue; }
+      var rows = L[area];
+      for (var i = 0; i < rows.length; i++) {
+        var nm = rows[i][0];
+        if (nm == null) { continue; }
+        var k = String(nm).toLowerCase();
+        if (!idx[k]) { idx[k] = []; disp[k] = nm; }
+        idx[k].push(area);
+      }
+    }
+    TAXIDX[layer] = idx;
+    DISPLAY[layer] = disp;
+  }
+
+  // Which layer the user is looking at. On the single-layer maps there is one
+  // key in the payload; on the toggle maps the layers control is a set of
+  // radios and the checked one wins.
+  function activeLayer() {
+    var keys = [];
+    for (var k in LAYERS) { if (Object.prototype.hasOwnProperty.call(LAYERS, k)) { keys.push(k); } }
+    if (keys.length === 1) { return keys[0]; }
+    var ins = el.querySelectorAll('input.leaflet-control-layers-selector');
+    for (var i = 0; i < ins.length; i++) {
+      if (!ins[i].checked) { continue; }
+      var lab = ins[i].parentNode ? ins[i].parentNode.textContent : '';
+      lab = lab.replace(/^\\s+|\\s+$/g, '');
+      for (var j = 0; j < keys.length; j++) { if (keys[j] === lab) { return keys[j]; } }
+    }
+    return keys[0];
+  }
+
+  // Polygons are not indexed by area anywhere, but every one with data carries
+  // a popup stub with data-area on it - so the popup content is the only
+  // reliable way back from an area code to its layer object.
+  // `this` is the leaflet map inside an onRender handler. It is re-derived
+  // here rather than reused from the other onRender block: those are separate
+  // functions, so that block's `wcfpMap` is not in scope and referencing it
+  // would throw a ReferenceError, not merely be undefined.
+  var theMap = (this && typeof this.eachLayer === 'function') ? this : null;
+
+  var AREALYR = null;
+  function indexPolygons() {
+    if (AREALYR) { return AREALYR; }
+    AREALYR = {};
+    if (!theMap) { return AREALYR; }
+    theMap.eachLayer(function(ly) {
+      if (!ly.getPopup || !ly.setStyle) { return; }
+      var p = ly.getPopup && ly.getPopup();
+      if (!p) { return; }
+      var c = p.getContent();
+      if (typeof c !== 'string') { return; }
+      var m = c.match(/data-area=\"([^\"]*)\"/);
+      if (!m) { return; }
+      var a = m[1].replace(/&quot;/g, '\"').replace(/&amp;/g, '&');
+      if (!AREALYR[a]) { AREALYR[a] = []; }
+      AREALYR[a].push(ly);
+    });
+    return AREALYR;
+  }
+
+  var HILITE = [];
+  function clearHighlight() {
+    for (var i = 0; i < HILITE.length; i++) {
+      try { HILITE[i].ly.setStyle(HILITE[i].style); } catch (e) {}
+    }
+    HILITE = [];
+  }
+  function highlightAreas(areas) {
+    clearHighlight();
+    var byArea = indexPolygons(), n = 0;
+    for (var i = 0; i < areas.length; i++) {
+      var lys = byArea[areas[i]];
+      if (!lys) { continue; }
+      for (var j = 0; j < lys.length; j++) {
+        var ly = lys[j];
+        var o = ly.options || {};
+        HILITE.push({ ly: ly, style: { color: o.color, weight: o.weight,
+                                       opacity: o.opacity, fillOpacity: o.fillOpacity } });
+        ly.setStyle({ color: '#d81b60', weight: 3, opacity: 1 });
+        if (ly.bringToFront) { ly.bringToFront(); }
+        n++;
+      }
+    }
+    return n;
+  }
+
+  function buildSearch() {
+    var container = (el.classList && el.classList.contains('leaflet-container'))
+                      ? el : el.querySelector('.leaflet-container');
+    var corner = el.querySelector('.leaflet-top.leaflet-right');
+    if (!container || !corner || corner.querySelector('.wcfp-search')) { return true; }
+
+    var box = document.createElement('div');
+    box.className = 'leaflet-control wcfp-search';
+    box.style.cssText = 'background:white; padding:6px 8px; border-radius:4px; ' +
+      'box-shadow:0 0 4px rgba(0,0,0,0.3); font:12px sans-serif; color:#333; ' +
+      'margin:10px; width:240px;';
+    box.innerHTML =
+      \"<div style='font-weight:bold; font-size:13px; margin-bottom:4px;'>Find a taxon</div>\" +
+      \"<input type='text' placeholder='start typing a name...' \" +
+      \"style='width:100%; box-sizing:border-box; font-size:12px; padding:3px 5px;'>\" +
+      \"<div class='wcfp-search-out' style='margin-top:5px; max-height:180px; overflow:auto;'></div>\";
+    corner.appendChild(box);
+
+    // Leaflet would otherwise treat typing and scrolling in the box as map
+    // gestures - dragging the map, zooming on scroll, and swallowing keys.
+    if (window.L && L.DomEvent) {
+      L.DomEvent.disableClickPropagation(box);
+      L.DomEvent.disableScrollPropagation(box);
+      ['keydown', 'keypress', 'keyup', 'dblclick', 'mousedown', 'pointerdown']
+        .forEach(function(ev) { L.DomEvent.on(box, ev, L.DomEvent.stopPropagation); });
+    }
+
+    var input = box.querySelector('input');
+    var out   = box.querySelector('.wcfp-search-out');
+
+    function render(html) { out.innerHTML = html; }
+
+    function runSearch() {
+      var q = input.value.replace(/^\\s+|\\s+$/g, '').toLowerCase();
+      if (q.length < 3) {
+        clearHighlight();
+        render(q.length ? \"<span style='color:#777;'>keep typing...</span>\" : '');
+        return;
+      }
+      var layer = activeLayer();
+      indexLayer(layer);
+      var idx = TAXIDX[layer] || {}, disp = DISPLAY[layer] || {};
+      var hits = [];
+      for (var k in idx) {
+        if (!Object.prototype.hasOwnProperty.call(idx, k)) { continue; }
+        if (k.indexOf(q) !== -1) { hits.push(k); }
+      }
+      hits.sort();
+      if (!hits.length) {
+        clearHighlight();
+        render(\"<span style='color:#777;'>no taxon matches on this layer</span>\");
+        return;
+      }
+      var shown = hits.slice(0, 25), h = [];
+      for (var i = 0; i < shown.length; i++) {
+        h.push(\"<div class='wcfp-hit' data-k='\" + esc(shown[i]) +
+               \"' style='cursor:pointer; padding:2px 0; border-bottom:1px solid #eee;'>\" +
+               '<i>' + esc(disp[shown[i]]) + '</i> ' +
+               \"<span style='color:#777;'>(\" + idx[shown[i]].length + ')</span></div>');
+      }
+      if (hits.length > shown.length) {
+        h.push(\"<div style='color:#777; padding-top:3px;'>\" +
+               (hits.length - shown.length) + ' more - keep typing</div>');
+      }
+      render(h.join(''));
+    }
+
+    var timer = null;
+    input.addEventListener('input', function() {
+      if (timer) { clearTimeout(timer); }
+      timer = setTimeout(runSearch, 150);
+    });
+
+    out.addEventListener('click', function(ev) {
+      var t = ev.target;
+      while (t && t !== out && !(t.className && String(t.className).indexOf('wcfp-hit') > -1)) {
+        t = t.parentNode;
+      }
+      if (!t || t === out) { return; }
+      var layer = activeLayer();
+      indexLayer(layer);
+      var k = t.getAttribute('data-k');
+      var areas = (TAXIDX[layer] || {})[k] || [];
+      var n = highlightAreas(areas);
+      var nm = (DISPLAY[layer] || {})[k] || k;
+      render(\"<div style='padding:2px 0;'><i>\" + esc(nm) + '</i></div>' +
+             \"<div style='color:#333;'>found in <b>\" + areas.length + '</b> area' +
+             (areas.length === 1 ? '' : 's') +
+             (n < areas.length ? \" <span style='color:#777;'>(\" + n +
+                ' drawn on this layer)</span>' : '') + '</div>' +
+             \"<div class='wcfp-clear' style='cursor:pointer; color:#1565c0; \" +
+             \"padding-top:4px;'>clear highlight</div>\");
+    });
+
+    out.addEventListener('click', function(ev) {
+      if (ev.target && String(ev.target.className).indexOf('wcfp-clear') > -1) {
+        clearHighlight();
+        input.value = '';
+        render('');
+      }
+    });
+
+    // Switching layers invalidates both the polygon index and any highlight.
+    var ins = el.querySelectorAll('input.leaflet-control-layers-selector');
+    for (var i = 0; i < ins.length; i++) {
+      ins[i].addEventListener('change', function() {
+        clearHighlight();
+        AREALYR = null;
+        if (input.value.length >= 3) { runSearch(); }
+      });
+    }
+    return true;
+  }
+  if (!buildSearch()) { setTimeout(buildSearch, 300); }
 }"
+
+## wcfp_popup_js and map_onrender_common_js are single string literals, not
+## paste0() calls, so they cannot interpolate the UI_PX_* constants the way the
+## control boxes above do - their sizes are written out. These assertions are
+## what stops the two drifting: change a constant without changing the popup
+## and the run stops here rather than shipping a mismatched set of boxes.
+stopifnot(
+  grepl(paste0("font-size:", UI_PX_SMALL, "px; color:#666;"), wcfp_popup_js, fixed = TRUE),
+  grepl(paste0("font-size:", UI_PX_SMALL, "px; padding:4px 10px;"), wcfp_popup_js, fixed = TRUE),
+  grepl(paste0("<table style='font-size:", UI_PX_SMALL, "px;"), wcfp_popup_js, fixed = TRUE),
+  grepl(paste0("font-size:", UI_PX_BOXTITLE, "px; margin-bottom:4px;'>Find a taxon"),
+        wcfp_popup_js, fixed = TRUE),
+  grepl(paste0("box-sizing:border-box; font-size:", UI_PX_BODY, "px;"),
+        wcfp_popup_js, fixed = TRUE)
+)
 
 # Label used for this map's single layer, in the popup header, the .xlsx
 # filename and the payload key below.
+## Drops the Antarctic continent from a layer's geometry, for DISPLAY only.
+##
+## The continent itself has no confirmed taxa, so nothing is lost by hiding
+## it. What must NOT be dropped is the rest of TDWG region 9: the Falklands,
+## South Georgia, Kerguelen, Macquarie, Crozet, Heard-McDonald,
+## Marion-Prince Edward and Tristan da Cunha together hold 47 confirmed
+## (area, taxon) records. Filtering on the region instead of the continent
+## would delete those from the maps while leaving them in the workbooks.
+##
+## Deliberately NOT applied to the source geometry used for the spatial
+## joins, so no count anywhere in the run changes.
+drop_antarctica <- function(x) {
+  if ("LEVEL3_COD" %in% names(x))      x[x$LEVEL3_COD != "ANT", ]
+  else if ("Level3_cod" %in% names(x)) x[x$Level3_cod != "ANT", ]
+  else if ("admin" %in% names(x))      x[x$admin != "Antarctica", ]
+  else x
+}
+
 COMBINED_LAYER <- "Confirmed by ≥2 data sources"
 
 # Toggle labels for the two combined choropleths, which each carry the OTHER
@@ -2281,8 +2892,24 @@ combined_country_rows <- combined_confirmed %>%
     ), character(1))
   )
 
+## ------------------------------------------------------------------ ##
+## Area code shown in each popup title.
+##
+## Held as the finished parenthetical rather than a bare code plus one
+## shared label, because a single map can show two schemes: the L4 map
+## carries level 4 areas AND the level 3 areas of its selectable overlay.
+##
+## Countries are keyed on the admin NAME, which is the popup area key for
+## those maps; TDWG areas are keyed on their code, which is already the key.
+## ------------------------------------------------------------------ ##
+# Derived from COUNTRY_ISO3 (defined with country_polys, because the country
+# workbook needs it long before this point) rather than rebuilt, so the code in
+# a popup title and the code in a downloaded workbook cannot disagree.
+AREA_CODES_COUNTRY <- as.list(setNames(paste0("ISO3: ", COUNTRY_ISO3),
+                                       names(COUNTRY_ISO3)))
 country_payload <- list(
   areaNames = as.list(setNames(sort(unique(combined_confirmed$country)),
+  areaCodes = AREA_CODES_COUNTRY,
                                sort(unique(combined_confirmed$country)))),
   hideLabels = list(COMBINED_LAYER),
   headers   = setNames(list("Distribution data source"), COMBINED_LAYER),
@@ -2296,7 +2923,7 @@ country_payload <- list(
 leaflet_country_richness <- combined_confirmed %>%
   count(country, name = "richness")
 
-leaflet_map_data <- country_polys %>%
+leaflet_map_data <- drop_antarctica(country_polys) %>%
   left_join(leaflet_country_richness, by = c("admin" = "country")) %>%
   mutate(
     popup_html = ifelse(
@@ -2330,7 +2957,7 @@ richness_pal <- colorNumeric(
 # -180 to one near +180, which shows up as a spurious horizontal line
 # crossing the entire map.
 stopifnot("continent" %in% names(country_polys))
-continent_polys <- country_polys %>%
+continent_polys <- drop_antarctica(country_polys) %>%
   filter(continent != "Antarctica") %>%
   group_by(continent) %>%
   summarise(geometry = st_union(geometry), .groups = "drop") %>%
@@ -2345,18 +2972,28 @@ legend_breaks <- sort(
 
 legend_html <- build_gradient_legend(richness_pal, legend_breaks)
 
-# Centroid of each country's single largest polygon part (rather than the
-# whole multipolygon's centroid), used below for the country name labels
-# so archipelago/multi-part countries (e.g. Indonesia, Chile) get a label
-# on their main landmass instead of potentially over open water between
-# islands.
+# A label point on each country's single largest polygon part, rather than on
+# the whole multipolygon, so archipelago/multi-part countries (Indonesia,
+# Chile) get their name on the main landmass instead of over open water
+# between islands.
+#
+# st_point_on_surface(), not st_centroid(): the centroid of a concave shape can
+# fall outside the shape. Four countries were affected - Vietnam, Israel,
+# Marshall Is. and British Indian Ocean Territory - and point_on_surface is
+# guaranteed to land inside the polygon it is given.
+#
+# The explicit MULTIPOLYGON cast matters as much as either. st_cast("POLYGON")
+# only explodes multiparts when the column is typed MULTIPOLYGON; on a
+# GEOMETRY-typed column it silently returns the first ring of each feature
+# instead. See fold_breakaway_polygons().
 largest_part_centroids <- leaflet_map_data %>%
+  st_cast("MULTIPOLYGON", warn = FALSE) %>%
   st_cast("POLYGON", warn = FALSE) %>%
   mutate(part_area = st_area(.)) %>%
   group_by(admin) %>%
   slice_max(part_area, n = 1, with_ties = FALSE) %>%
   ungroup() %>%
-  st_centroid()
+  st_point_on_surface()
 
 # Scale each label's font size to its country's land area, so small
 # countries (which get badly overlapped/cluttered at world-view zoom when
@@ -2375,111 +3012,13 @@ largest_part_centroids$label_html <- lapply(
 
 map_title_html <- sprintf(
   paste0(MAP_HEADING,
-         "<div style='font-size:13px; color:#000; margin-top:3px;'>",
+         "<div style='font-size:", UI_PX_SUB, "px; color:#000; margin-top:3px;'>",
          "%s taxa across %s countries<br><span style='font-style:italic;'>Distribution of taxa confirmed in &ge;2 data sources</span></div>"),
   scales::comma(n_distinct(combined_confirmed$taxon)),
   scales::comma(length(qualifying_countries))
 )
 
-# Extent of all country polygons, used below to explicitly fit the map's
-# initial view to the data on open - without this, the map can otherwise
-# load at Leaflet's default center/zoom (or an unhelpful auto-fit based on
-# just one layer, e.g. the label point markers) rather than showing the
-# whole map area.
-map_bounds <- zoom_in_bbox(st_bbox(leaflet_map_data))
 
-species_richness_leaflet <- leaflet(leaflet_map_data,
-                                    options = leafletOptions(zoomSnap = 0.05, zoomDelta = 0.5)) %>%
-  fitBounds(
-    lng1 = as.numeric(map_bounds["xmin"]),
-    lat1 = as.numeric(map_bounds["ymin"]),
-    lng2 = as.numeric(map_bounds["xmax"]),
-    lat2 = as.numeric(map_bounds["ymax"])
-  ) %>%
-  # No tile basemap - every country is already drawn as a filled polygon
-  # below (richness color, or white for no confirmed species), so a tile
-  # layer would only be supplying the ocean color anyway, and tile
-  # providers keep hitting API-key walls (CartoDB.Positron) or missing
-  # options (no Esri equivalent). Setting the container background
-  # directly gives an exact, dependency-free ocean color instead.
-  addPolygons(
-    fillColor    = ~richness_pal(richness),
-    fillOpacity  = 0.8,
-    color        = "black",
-    weight       = 1,
-    label        = ~lapply(paste0("<b>", escape_html(admin), "</b>: ",
-                                  scales::comma(ifelse(is.na(richness), 0, richness)),
-                                  " taxa"), htmltools::HTML),
-    popup        = ~popup_html,
-    popupOptions = WCFP_POPUP_OPTIONS,
-    highlightOptions = highlightOptions(weight = 4, color = "#000000", opacity = 1,
-                                        bringToFront = TRUE)
-  ) %>%
-  addPolygons(
-    data    = continent_polys,
-    fill    = FALSE,
-    color   = "black",
-    weight  = 1,
-    opacity = 1,
-    options = pathOptions(interactive = FALSE)
-  ) %>%
-  # Country name labels from the base tile layer get covered by the
-  # choropleth fill above. No free labels-only reference tile layer is
-  # available (Esri has none, CartoDB's requires the same API key
-  # CartoDB.Positron does) - added directly as our own permanent labels
-  # instead, which as a vector layer we control always renders on top,
-  # with no external tile dependency.
-  addLabelOnlyMarkers(
-    data = largest_part_centroids,
-    label = largest_part_centroids$label_html,
-    labelOptions = labelOptions(
-      noHide = TRUE,
-      textOnly = TRUE,
-      direction = "center",
-      style = list(
-        "font-weight" = "bold",
-        "color" = "#000000",
-        "text-shadow" = "-1px -1px 0 #fff, 1px -1px 0 #fff, -1px 1px 0 #fff, 1px 1px 0 #fff, 0 0 3px #fff"
-      )
-    )
-  ) %>%
-  addControl(
-    html = legend_html,
-    position = "bottomright"
-  ) %>%
-  addControl(
-    html = map_source_strip_country,
-    position = "bottomright",
-    className = "wcfp-mapsource"
-  ) %>%
-  # Title added before the "Click map to view/download" hint below so that, with
-  # both in the same corner, the title stacks above it.
-  addControl(
-    html = map_title_html,
-    position = "topleft"
-  ) %>%
-  addControl(
-    html = click_hint_country,
-    position = "topleft"
-  ) %>%
-  addScaleBar(
-    position = "bottomleft",
-    options = scaleBarOptions(maxWidth = 260, metric = TRUE, imperial = FALSE, updateWhenIdle = TRUE)
-  ) %>%
-  htmlwidgets::onRender(map_base_onrender_js) %>%
-  # Builds each popup's taxa table and wires its Download button. The
-  # payload is embedded once as JSON and the table rendered on first open
-  # - see the wcfp_popup_js block above for why.
-  htmlwidgets::onRender(wcfp_popup_js, data = country_payload)
-
-leaflet_html_path <- file.path(combined_output_dir, "WCFP_taxa_distribution_country_map_interactive.html")
-leaflet_lib_tmp <- file.path(combined_output_dir, "lib_tmp")
-save_widget_selfcontained(
-  widget = species_richness_leaflet,
-  file   = leaflet_html_path,
-  libdir = leaflet_lib_tmp
-)
-message("Interactive leaflet map saved to: ", leaflet_html_path)
 
 
 
@@ -2506,15 +3045,15 @@ richness_occurrences <- src_occurrences %>% count(country, name = "richness")
 richness_grin        <- src_grin        %>% count(country, name = "richness")
 richness_wcfp        <- src_wcfp        %>% count(country, name = "richness")
 
-map_data_occurrences <- country_polys %>% left_join(richness_occurrences, by = c("admin" = "country"))
-map_data_grin        <- country_polys %>% left_join(richness_grin,        by = c("admin" = "country"))
-map_data_wcfp        <- country_polys %>% left_join(richness_wcfp,        by = c("admin" = "country"))
+map_data_occurrences <- drop_antarctica(country_polys) %>% left_join(richness_occurrences, by = c("admin" = "country"))
+map_data_grin        <- drop_antarctica(country_polys) %>% left_join(richness_grin,        by = c("admin" = "country"))
+map_data_wcfp        <- drop_antarctica(country_polys) %>% left_join(richness_wcfp,        by = c("admin" = "country"))
 
 # Fourth layer: the ">=2 of 3 sources" combined result, reusing the same
 # `leaflet_country_richness` (derived from `combined_confirmed`) that drives
 # the main richness map above - so the strict combined view can be toggled
 # against each individual source without leaving this map.
-map_data_combined <- country_polys %>%
+map_data_combined <- drop_antarctica(country_polys) %>%
   left_join(leaflet_country_richness, by = c("admin" = "country"))
 
 # One shared palette/domain across all 4 layers (rather than each scaled
@@ -2542,30 +3081,46 @@ by_source_legend_breaks <- sort(by_source_legend_breaks[by_source_legend_breaks 
 
 by_source_legend_html <- build_gradient_legend(by_source_pal, by_source_legend_breaks)
 
-# Used by both by-source maps (country and L4 below). Everything the other
-# maps do (grey background + zoom control above the scale bar, via
-# map_onrender_common_js), plus a "Distribution data source" heading on the layers
-# control - addLayersControl() has no title argument of its own, so the
-# heading is inserted into the control's DOM here instead. It goes inside
-# .leaflet-control-layers-list (falling back to the control itself) so it
-# sits above the checkboxes rather than above the collapsed-mode toggle.
-by_source_onrender_js <- paste0("function(el, x) {", map_onrender_common_js, "
+# Everything the other maps do (grey background + zoom control above the scale
+# bar, via map_onrender_common_js), plus a heading on the layers control.
+# addLayersControl() has no title argument of its own, so the heading is
+# inserted into the control's DOM here instead. It goes inside
+# .leaflet-control-layers-list (falling back to the control itself) so it sits
+# above the checkboxes rather than above the collapsed-mode toggle.
+#
+# Built by a function rather than written out per map: there are three titles
+# now, and three copies of the same twelve lines is three places for them to
+# drift. The title is JSON-encoded, so quotes or accents in it cannot break the
+# surrounding script - R's parse() cannot see inside this string.
+# `extra` is appended INSIDE the onRender function, before its closing brace,
+# for maps that need more than the heading - the Red List maps also sync their
+# per-layer legends. Passing it in beats string-surgery on the returned code.
+make_layers_title_js <- function(title, extra = "") paste0(
+  "function(el, x) {", map_onrender_common_js, "
   function addLayersTitle() {
     var lc = el.querySelector('.leaflet-control-layers');
     if (!lc) { return false; }
     if (lc.querySelector('.wcfp-layers-title')) { return true; }
     var h = document.createElement('div');
     h.className = 'wcfp-layers-title';
-    h.textContent = 'Distribution data source';
+    h.textContent = ", jsonlite::toJSON(title, auto_unbox = TRUE), ";
     h.style.fontWeight = 'bold';
-    h.style.fontSize = '13px';
+    h.style.fontSize = '", UI_PX_BOXTITLE, "px';
     h.style.marginBottom = '5px';
     var list = lc.querySelector('.leaflet-control-layers-list') || lc;
     list.insertBefore(h, list.firstChild);
     return true;
   }
   if (!addLayersTitle()) { setTimeout(addLayersTitle, 200); }
+", extra, "
 }")
+
+# The by-source maps toggle between data sources ...
+by_source_onrender_js <- make_layers_title_js("Distribution data source")
+
+# ... and the L3 / L4 "2 or more sources" maps toggle the other TDWG
+# resolution on and off as an overlay.
+tdwg_onrender_js <- make_layers_title_js("TDWG areas")
 
 # ---------------------------------------- #
 #   Per-layer popups + downloadable tables  #
@@ -2582,7 +3137,7 @@ bs_rows_grin <- src_grin %>%
   transmute(area_key = country, taxon, info = grin_status) %>% attach_taxon_names()
 bs_rows_wcfp <- src_wcfp %>%
   transmute(area_key = country, taxon, info = occurrence_status) %>% attach_taxon_names()
-bs_rows_comb <- combined_country_rows %>% select(area_key, taxa, authority, info)
+bs_rows_comb <- combined_country_rows %>% select(area_key, taxa, authority, WCFP_ID, info)
 
 bs_layer_names <- c(LBL_OCC, LBL_GRIN, LBL_WCFP, COMBINED_LAYER)
 
@@ -2607,7 +3162,7 @@ bs_area_counts <- c(
 
 by_source_title_html <- paste0(
   MAP_HEADING,
-  "<div style='font-size:13px; color:#000; margin-top:3px;'>",
+  "<div style='font-size:", UI_PX_SUB, "px; color:#000; margin-top:3px;'>",
   paste0(bs_layer_names, ": ", scales::comma(bs_taxa_counts), " taxa across ",
          scales::comma(bs_area_counts), " countries", collapse = "<br>"),
   "</div>"
@@ -2615,6 +3170,7 @@ by_source_title_html <- paste0(
 
 by_source_payload <- list(
   areaNames = as.list(setNames(country_polys$admin, country_polys$admin)),
+  areaCodes = AREA_CODES_COUNTRY,
   hideLabels = list(COMBINED_LAYER),
   headers   = setNames(as.list(c("Occurrence source", "Native/non-native status",
                                  "Native/non-native status", "Distribution data source")),
@@ -2626,141 +3182,6 @@ by_source_payload <- list(
                        bs_layer_names)
 )
 
-by_source_leaflet <- leaflet(options = leafletOptions(zoomSnap = 0.05, zoomDelta = 0.5)) %>%
-  fitBounds(
-    lng1 = as.numeric(map_bounds["xmin"]), lat1 = as.numeric(map_bounds["ymin"]),
-    lng2 = as.numeric(map_bounds["xmax"]), lat2 = as.numeric(map_bounds["ymax"])
-  ) %>%
-  addPolygons(
-    data        = map_data_occurrences,
-    fillColor   = ~by_source_pal(richness),
-    fillOpacity = 0.8,
-    color       = "black",
-    weight      = 1,
-    label       = ~lapply(paste0("<b>", escape_html(admin), "</b>: ",
-                                 scales::comma(ifelse(is.na(richness), 0, richness)),
-                                 " taxa"), htmltools::HTML),
-    popup       = ~popup_stub(LBL_OCC, admin, admin, !is.na(richness)),
-    popupOptions = WCFP_POPUP_OPTIONS,
-    group       = LBL_OCC,
-    highlightOptions = highlightOptions(weight = 4, color = "#000000", opacity = 1,
-                                        bringToFront = TRUE)
-  ) %>%
-  addPolygons(
-    data        = map_data_grin,
-    fillColor   = ~by_source_pal(richness),
-    fillOpacity = 0.8,
-    color       = "black",
-    weight      = 1,
-    label       = ~lapply(paste0("<b>", escape_html(admin), "</b>: ",
-                                 scales::comma(ifelse(is.na(richness), 0, richness)),
-                                 " taxa"), htmltools::HTML),
-    popup       = ~popup_stub(LBL_GRIN, admin, admin, !is.na(richness)),
-    popupOptions = WCFP_POPUP_OPTIONS,
-    group       = LBL_GRIN,
-    highlightOptions = highlightOptions(weight = 4, color = "#000000", opacity = 1,
-                                        bringToFront = TRUE)
-  ) %>%
-  addPolygons(
-    data        = map_data_wcfp,
-    fillColor   = ~by_source_pal(richness),
-    fillOpacity = 0.8,
-    color       = "black",
-    weight      = 1,
-    label       = ~lapply(paste0("<b>", escape_html(admin), "</b>: ",
-                                 scales::comma(ifelse(is.na(richness), 0, richness)),
-                                 " taxa"), htmltools::HTML),
-    popup       = ~popup_stub(LBL_WCFP, admin, admin, !is.na(richness)),
-    popupOptions = WCFP_POPUP_OPTIONS,
-    group       = LBL_WCFP,
-    highlightOptions = highlightOptions(weight = 4, color = "#000000", opacity = 1,
-                                        bringToFront = TRUE)
-  ) %>%
-  addPolygons(
-    data        = map_data_combined,
-    fillColor   = ~by_source_pal(richness),
-    fillOpacity = 0.8,
-    color       = "black",
-    weight      = 1,
-    label       = ~lapply(paste0("<b>", escape_html(admin), "</b>: ",
-                                 scales::comma(ifelse(is.na(richness), 0, richness)),
-                                 " taxa"), htmltools::HTML),
-    popup       = ~popup_stub(COMBINED_LAYER, admin, admin, !is.na(richness)),
-    popupOptions = WCFP_POPUP_OPTIONS,
-    group       = COMBINED_LAYER,
-    highlightOptions = highlightOptions(weight = 4, color = "#000000", opacity = 1,
-                                        bringToFront = TRUE)
-  ) %>%
-  addPolygons(
-    data    = continent_polys,
-    fill    = FALSE,
-    color   = "black",
-    weight  = 1,
-    opacity = 1,
-    options = pathOptions(interactive = FALSE)
-  ) %>%
-  addLabelOnlyMarkers(
-    data = largest_part_centroids,
-    label = largest_part_centroids$label_html,
-    labelOptions = labelOptions(
-      noHide = TRUE,
-      textOnly = TRUE,
-      direction = "center",
-      style = list(
-        "font-weight" = "bold",
-        "color" = "#000000",
-        "text-shadow" = "-1px -1px 0 #fff, 1px -1px 0 #fff, -1px 1px 0 #fff, 1px 1px 0 #fff, 0 0 3px #fff"
-      )
-    )
-  ) %>%
-  # Title is added BEFORE the layers control, and both sit in the same
-  # corner, so the title stacks above the "Distribution data source" layer toggle.
-  addControl(
-    html = by_source_title_html,
-    position = "topleft"
-  ) %>%
-  addLayersControl(
-    baseGroups = c("Occurrence records", "GRIN-Global distribution data",
-                   "WCFP distribution data", "Confirmed by ≥2 data sources"),
-    position = "topleft",
-    options = layersControlOptions(collapsed = FALSE)
-  ) %>%
-  # Base groups, not overlays: the layers are mutually exclusive, so exactly
-  # one source is ever drawn and they cannot be stacked over one another. The
-  # combined >=2-source layer is the headline result, so it is the one selected
-  # on open; hideGroup() removes the other three, which leaves the radio button
-  # for the combined layer as the checked one.
-  hideGroup(c(LBL_OCC, LBL_GRIN, LBL_WCFP)) %>%
-  # Added after the layers control so it sits below it, keeping the title
-  # and the "Distribution data source" toggle adjacent.
-  addControl(
-    html = click_hint_country_bs,
-    position = "topleft"
-  ) %>%
-  addControl(
-    html = by_source_legend_html,
-    position = "bottomright"
-  ) %>%
-  addControl(
-    html = map_source_strip_country,
-    position = "bottomright",
-    className = "wcfp-mapsource"
-  ) %>%
-  addScaleBar(
-    position = "bottomleft",
-    options = scaleBarOptions(maxWidth = 260, metric = TRUE, imperial = FALSE, updateWhenIdle = TRUE)
-  ) %>%
-  htmlwidgets::onRender(by_source_onrender_js) %>%
-  htmlwidgets::onRender(wcfp_popup_js, data = by_source_payload)
-
-by_source_html_path <- file.path(combined_output_dir, "WCFP_taxa_distribution_by_source_map_interactive.html")
-by_source_lib_tmp <- file.path(combined_output_dir, "lib_tmp_by_source")
-save_widget_selfcontained(
-  widget = by_source_leaflet,
-  file   = by_source_html_path,
-  libdir = by_source_lib_tmp
-)
-message("Interactive by-source leaflet map saved to: ", by_source_html_path)
 
 
 
@@ -2794,7 +3215,7 @@ message("Interactive by-source leaflet map saved to: ", by_source_html_path)
 # forces both L4 maps to open zoomed far out. Sub-antarctic islands (South
 # Georgia, Kerguelen, Heard-McDonald etc.) are level 3 areas in their own
 # right and are deliberately NOT removed, again matching the country maps.
-level4_sf <- st_read(file.path(inputs_dir, "level4.geojson"), quiet = TRUE) %>%
+level4_sf <- st_read(file.path(inputs_dir, "TDWG_L3_L4/level4/level4.geojson"), quiet = TRUE) %>%
   filter(Level3_cod != "ANT")
 level4_lookup_full <- level4_sf %>%
   st_drop_geometry() %>%
@@ -2802,9 +3223,79 @@ level4_lookup_full <- level4_sf %>%
 
 # ENCODING=LATIN1 - see the level3_shp read in Method 3 above for why UTF-8
 # is wrong here.
-level3_sf <- st_read(file.path(inputs_dir, "level3/level3.shp"), quiet = TRUE,
+level3_sf <- st_read(file.path(inputs_dir, "TDWG_L3_L4/level3/level3.shp"), quiet = TRUE,
                       options = "ENCODING=LATIN1") %>%
   filter(LEVEL3_COD != "ANT")
+
+## ------------------------------------------------------------------ ##
+## DISPLAY NAMES COME FROM THE WCFP RELEASE, NOT THE SHAPEFILE.
+##
+## level3.shp is the Kew GIS build of WGSRPD Edition 2 (Brummitt 2001) and
+## still carries that edition's political vocabulary: Zaire, Swaziland,
+## Czechoslovakia, Yugoslavia, Surinam. The WCFP distribution release uses
+## current names for the same codes. Fifteen areas differ. Both sides agree
+## on the CODE, which is what every join in this file uses, so this swap
+## changes the label and nothing else.
+##
+## SCOPE - this is deliberately the ONLY place the names are overridden:
+##   - it propagates to every L3 hover label, popup, workbook sheet and the
+##     taxon-search index, because all of them read level3_sf$LEVEL3_NAM
+##     either directly or through area_l3_lookup below;
+##   - `level3_shp` in Method 3 is a SEPARATE read and is left alone on
+##     purpose. It keys level3_country_map, and manual_country_overrides is
+##     written against the WCFP spellings that fail to match it. Renaming it
+##     here would make some overrides unreachable and silently change which
+##     countries a taxon is counted in.
+##
+## Names are taken from wcfp_distribution_published (the unfiltered read) so
+## the labels do not depend on which taxa a USER_TAXA_FILE run has in play.
+## ------------------------------------------------------------------ ##
+# Edit this to override an individual label, e.g. c(TUR = "Türkiye").
+# character(0), not c(): c() is NULL, and indexing NULL yields NULL rather than
+# a column of NAs, which drops the override column instead of leaving it empty.
+L3_NAME_OVERRIDES <- character(0)
+
+l3_release_names <- wcfp_distribution_published %>%
+  transmute(code = toupper(trimws(area_code_l3)), nm = str_squish(as.character(area))) %>%
+  filter(!is.na(code), nzchar(code), !is.na(nm), nzchar(nm)) %>%
+  # A handful of rows carry a blank area name for an otherwise-named code, and
+  # nothing guarantees one name per code, so take the most frequent spelling
+  # rather than whichever row happens to sort first.
+  count(code, nm, sort = TRUE) %>%
+  distinct(code, .keep_all = TRUE) %>%
+  select(code, nm)
+
+.l3_two_names <- wcfp_distribution_published %>%
+  transmute(code = toupper(trimws(area_code_l3)), nm = str_squish(as.character(area))) %>%
+  filter(!is.na(nm), nzchar(nm)) %>% distinct(code, nm) %>% count(code) %>% filter(n > 1)
+if (nrow(.l3_two_names) > 0)
+  cat("NOTE: L3 code(s) with more than one non-blank name in the release, most frequent used: ",
+      paste(.l3_two_names$code, collapse = ", "), "\n", sep = "")
+
+level3_sf <- level3_sf %>%
+  mutate(
+    .release_nm = l3_release_names$nm[match(LEVEL3_COD, l3_release_names$code)],
+    .override   = unname(L3_NAME_OVERRIDES[LEVEL3_COD]),
+    # An area absent from the release keeps the shapefile's name rather than
+    # becoming NA - BOU (Bouvet I.) has no distribution records at all.
+    LEVEL3_NAM  = coalesce(.override, .release_nm, LEVEL3_NAM)
+  ) %>%
+  select(-.release_nm, -.override)
+
+stopifnot(!anyNA(level3_sf$LEVEL3_NAM), all(nzchar(level3_sf$LEVEL3_NAM)))
+
+.l3_renamed <- st_read(file.path(inputs_dir, "TDWG_L3_L4/level3/level3.shp"), quiet = TRUE,
+                       options = "ENCODING=LATIN1") %>%
+  st_drop_geometry() %>%
+  transmute(LEVEL3_COD, was = str_squish(LEVEL3_NAM)) %>%
+  inner_join(st_drop_geometry(level3_sf) %>% transmute(LEVEL3_COD, now = LEVEL3_NAM),
+             by = "LEVEL3_COD") %>%
+  filter(was != now)
+cat("L3 display names taken from the WCFP release: ", nrow(.l3_renamed), " of ",
+    nrow(level3_sf), " areas relabelled\n", sep = "")
+if (nrow(.l3_renamed) > 0)
+  cat(paste0("  ", .l3_renamed$LEVEL3_COD, "  ", .l3_renamed$was, " -> ", .l3_renamed$now,
+             collapse = "\n"), "\n", sep = "")
 
 # ---------------------------------------- #
 #   L4 Source 1: occurrences (true L4      #
@@ -2873,7 +3364,11 @@ grin_via_hyphen_alias_l4 <- grin_with_country_rowid %>%
   transmute(.grin_row_id, country_code, state, taxon = recode(name, !!!grin_hyphen_alias), grin_status) %>%
   filter(taxon %in% wcfp_plantlist$wcfp_name_match)
 
-grin_taxon_matched <- bind_rows(grin_direct_l4, grin_via_genus_species_l4, grin_via_hyphen_alias_l4)
+grin_taxon_matched <- bind_rows(grin_direct_l4, grin_via_genus_species_l4,
+                                grin_via_hyphen_alias_l4) %>%
+  # Same gate as the country-level source above. Applied separately because
+  # this path keeps `state`/`country_code` and so cannot reuse src_grin.
+  keep_published_taxa("taxon", "GRIN (level 4)")
 
 # ISO3 (GRIN's country_code) -> ISO2 (level4.geojson's ISO_Code)
 iso3_to_iso2 <- country_polys %>%
@@ -2967,7 +3462,7 @@ combined_confirmed_l4 <- combined_l4 %>%
   filter(n_sources >= 2) %>%
   select(-n_sources) %>%
   left_join(area_l4_lookup, by = "area_l4") %>%
-  left_join(wcfp_taxon_lookup, by = c("taxon" = "wcfp_name_match")) %>%
+  attach_accepted_name() %>%
   attach_redlist() %>%
   arrange(area_l4, taxon)
 
@@ -3003,6 +3498,7 @@ for (l4 in qualifying_l4_areas) {
   l4_data <- combined_confirmed_l4 %>%
     filter(area_l4 == l4) %>%
     transmute(
+      WCFP_ID,
       taxa = coalesce(taxon_name_accepted, taxon),
       authority = taxon_authors_accepted,
       iucn_red_list_category_code = rl_code,
@@ -3014,11 +3510,11 @@ for (l4 in qualifying_l4_areas) {
   addWorksheet(wb_l4, sheet_name)
   writeData(wb_l4, sheet_name, l4_data, headerStyle = createStyle(textDecoration = "bold"))
   freezePane(wb_l4, sheet_name, firstRow = TRUE)
-  setColWidths(wb_l4, sheet_name, cols = 1:10,
-               widths = c(38, 22, 16, 24, 22, 22, 14, 20, 14, 20))
+  setColWidths(wb_l4, sheet_name, cols = 1:11,
+               widths = c(10, 38, 22, 16, 24, 22, 22, 14, 20, 14, 20))
 }
 
-l4_xlsx_path <- file.path(combined_output_dir, "WCFP_taxa-lists_by_L4area_2plus_sources.xlsx")
+l4_xlsx_path <- file.path(taxa_lists_dir, "taxa-lists_food-plants_distributions_by-L4_2-or-more-sources.xlsx")
 saveWorkbook(wb_l4, l4_xlsx_path, overwrite = TRUE)
 message("Combined per-L4-area taxa workbook saved to: ", l4_xlsx_path)
 
@@ -3033,12 +3529,21 @@ combined_l4_rows <- combined_confirmed_l4 %>%
     area_key  = area_l4,
     taxa      = coalesce(taxon_name_accepted, taxon),
     authority = coalesce(taxon_authors_accepted, ""),
+    # The parent level 3 area, for the DOWNLOAD only - see dlOnly in the
+    # payload below. Named from level3_sf rather than area_l3_lookup, which
+    # does not exist until the level 3 section further down.
+    l3_area   = paste0(area_l3, " - ",
+                       level3_sf$LEVEL3_NAM[match(area_l3, level3_sf$LEVEL3_COD)]),
     info      = vapply(seq_len(n()), function(i) build_data_source_label(
       data_source_occurrences[i], occurrences_data_source[i],
       data_source_GRIN[i], data_source_WCFP[i], status_WCFP[i], status_GRIN[i]
     ), character(1))
   )
 
+AREA_CODES_L3 <- as.list(setNames(
+  paste0("L3: ", area_l3_lookup$area_l3), area_l3_lookup$area_l3))
+AREA_CODES_L4 <- as.list(setNames(
+  paste0("L3-L4: ", area_l4_lookup$area_l4), area_l4_lookup$area_l4))
 l4_area_names <- setNames(
   paste0(area_l4_lookup$area_l4_name, " (L3: ", area_l4_lookup$area_l3, ")"),
   area_l4_lookup$area_l4
@@ -3046,14 +3551,23 @@ l4_area_names <- setNames(
 
 l4_payload <- list(
   areaNames = as.list(l4_area_names),
+  areaCodes = AREA_CODES_L4,
   hideLabels = list(COMBINED_LAYER),
-  headers   = setNames(list("Distribution data source"), COMBINED_LAYER),
-  layers    = setNames(list(build_layer_export(combined_l4_rows)), COMBINED_LAYER)
+  # The parent level 3 area is LAST and counted in dlOnly, so it reaches the
+  # downloaded sheet but not the popup table - on screen every row of a level 4
+  # popup would repeat the same parent, which says nothing.
+  headers   = setNames(list(list("Distribution data source",
+                                 "TDWG Level-3 botanical country")),
+                       COMBINED_LAYER),
+  layers    = setNames(list(build_layer_export(combined_l4_rows,
+                                               detail_cols = c("info", "l3_area"))),
+                       COMBINED_LAYER),
+  dlOnly    = setNames(list(1L), COMBINED_LAYER)
 )
 
 l4_richness <- combined_confirmed_l4 %>% count(area_l4, name = "richness")
 
-map_data_l4 <- level4_sf %>%
+map_data_l4 <- drop_antarctica(level4_sf) %>%
   left_join(l4_richness, by = c("Level4_cod" = "area_l4")) %>%
   mutate(
     popup_html = ifelse(
@@ -3073,7 +3587,6 @@ l4_richness_pal <- colorNumeric(
   reverse  = FALSE
 )
 
-l4_map_bounds <- zoom_in_bbox(st_bbox(map_data_l4))
 
 l4_legend_breaks <- pretty(map_data_l4$richness, n = 6)
 l4_legend_breaks <- sort(
@@ -3083,94 +3596,6 @@ l4_legend_breaks <- sort(
 )
 l4_legend_html <- build_gradient_legend(l4_richness_pal, l4_legend_breaks)
 
-# Same heading wording as the country map above, so the two read as a pair;
-# only the subtitle counts differ (L4/L3 areas rather than countries).
-l4_map_title_html <- sprintf(
-  paste0(MAP_HEADING,
-         "<div style='font-size:13px; color:#000; margin-top:3px;'>",
-         "%s taxa across %s TDWG Level-4 botanical areas (%s Level-3 botanical countries)",
-         "<br><span style='font-style:italic;'>Distribution of taxa confirmed in &ge;2 data sources</span></div>"),
-  scales::comma(n_distinct(combined_confirmed_l4$taxon)),
-  scales::comma(n_l4_covered),
-  scales::comma(n_l3_covered)
-)
-
-# L4 boundary weight (1.3) is a little thicker than the country/continent
-# baseline (1) used in the country-level maps above. The L3 outline layer
-# (unfilled, non-interactive) gives visual context for how L4 areas group
-# into their parent TDWG level 3 area.
-combined_l4_leaflet <- leaflet(map_data_l4,
-                               options = leafletOptions(zoomSnap = 0.05, zoomDelta = 0.5)) %>%
-  # Dedicated pane for the L3 outlines, above Leaflet's overlayPane (z 400)
-  # where the L4 polygons are drawn, but below markerPane (600) so labels,
-  # tooltips and popups still sit on top. Relying on draw order alone would
-  # not hold: the L4 layers use highlightOptions(bringToFront = TRUE), so
-  # every hovered L4 area would be lifted above the L3 outlines and stay
-  # there, progressively burying them.
-  addMapPane("l3_outline", zIndex = 450) %>%
-  fitBounds(
-    lng1 = as.numeric(l4_map_bounds["xmin"]), lat1 = as.numeric(l4_map_bounds["ymin"]),
-    lng2 = as.numeric(l4_map_bounds["xmax"]), lat2 = as.numeric(l4_map_bounds["ymax"])
-  ) %>%
-  addPolygons(
-    fillColor    = ~l4_richness_pal(richness),
-    fillOpacity  = 0.8,
-    color        = "black",
-    weight       = 0.5,
-    label        = ~lapply(paste0("<b>", escape_html(Level_4_Na), "</b>: ",
-                                  scales::comma(ifelse(is.na(richness), 0, richness)),
-                                  " taxa"), htmltools::HTML),
-    popup        = ~popup_html,
-    popupOptions = WCFP_POPUP_OPTIONS,
-    group        = LYR_L4,
-    highlightOptions = highlightOptions(weight = 2.5, color = "#000000", opacity = 1,
-                                        bringToFront = TRUE)
-  ) %>%
-  addPolygons(
-    data    = level3_sf,
-    fill    = FALSE,
-    color   = "black",
-    # Heavier than the L4 boundaries (1.3) so the parent TDWG level 3 areas
-    # read as the dominant division, but not so heavy that the L4 mesh inside
-    # them is overwhelmed.
-    weight  = 1.1,
-    opacity = 1,
-    group   = LYR_L3,
-    options = pathOptions(interactive = FALSE, pane = "l3_outline")
-  ) %>%
-  # Both resolutions toggleable and stackable. Both start on, which is how
-  # this map has always looked - the control just makes the L3 outlines
-  # removable when the L4 mesh needs to be read on its own.
-  addLayersControl(
-    overlayGroups = c(LYR_L4, LYR_L3),
-    position = "topleft",
-    options = layersControlOptions(collapsed = FALSE)
-  ) %>%
-  addControl(html = l4_legend_html, position = "bottomright") %>%
-  addControl(html = map_source_strip_l4, position = "bottomright",
-             className = "wcfp-mapsource") %>%
-  # Title added before the "Click map to view/download" hint below so that, with
-  # both in the same corner, the title stacks above it.
-  addControl(html = l4_map_title_html, position = "topleft") %>%
-  addControl(
-    html = click_hint_l4,
-    position = "topleft"
-  ) %>%
-  addScaleBar(
-    position = "bottomleft",
-    options = scaleBarOptions(maxWidth = 260, metric = TRUE, imperial = FALSE, updateWhenIdle = TRUE)
-  ) %>%
-  htmlwidgets::onRender(map_base_onrender_js) %>%
-  htmlwidgets::onRender(wcfp_popup_js, data = l4_payload)
-
-l4_html_path <- file.path(combined_output_dir, "WCFP_taxa_distribution_L4area_map_interactive.html")
-l4_lib_tmp <- file.path(combined_output_dir, "lib_tmp_l4")
-save_widget_selfcontained(
-  widget = combined_l4_leaflet,
-  file   = l4_html_path,
-  libdir = l4_lib_tmp
-)
-message("Interactive L4-level leaflet map saved to: ", l4_html_path)
 
 # ---------------------------------------- #
 #   By-source toggle map at L4 level       #
@@ -3179,14 +3604,14 @@ richness_occurrences_l4 <- src_occurrences_l4 %>% count(area_l4, name = "richnes
 richness_grin_l4        <- src_grin_l4        %>% count(area_l4, name = "richness")
 richness_wcfp_l4        <- src_wcfp_l4        %>% count(area_l4, name = "richness")
 
-map_data_occurrences_l4 <- level4_sf %>% left_join(richness_occurrences_l4, by = c("Level4_cod" = "area_l4"))
-map_data_grin_l4        <- level4_sf %>% left_join(richness_grin_l4,        by = c("Level4_cod" = "area_l4"))
-map_data_wcfp_l4        <- level4_sf %>% left_join(richness_wcfp_l4,        by = c("Level4_cod" = "area_l4"))
+map_data_occurrences_l4 <- drop_antarctica(level4_sf) %>% left_join(richness_occurrences_l4, by = c("Level4_cod" = "area_l4"))
+map_data_grin_l4        <- drop_antarctica(level4_sf) %>% left_join(richness_grin_l4,        by = c("Level4_cod" = "area_l4"))
+map_data_wcfp_l4        <- drop_antarctica(level4_sf) %>% left_join(richness_wcfp_l4,        by = c("Level4_cod" = "area_l4"))
 
 # Fourth layer: the ">=2 of 3 sources" combined result at L4, reusing the same
 # `l4_richness` (derived from `combined_confirmed_l4`) that drives the L4
 # richness map above.
-map_data_combined_l4    <- level4_sf %>% left_join(l4_richness,             by = c("Level4_cod" = "area_l4"))
+map_data_combined_l4    <- drop_antarctica(level4_sf) %>% left_join(l4_richness,             by = c("Level4_cod" = "area_l4"))
 
 # Shared palette/domain across all 4 layers, combined layer included so its
 # values can never fall outside the palette range.
@@ -3229,7 +3654,7 @@ bs4_rows_grin <- src_grin_l4 %>%
   transmute(area_key = area_l4, taxon, info = grin_status) %>% attach_taxon_names()
 bs4_rows_wcfp <- src_wcfp_l4 %>%
   transmute(area_key = area_l4, taxon, info = occurrence_status) %>% attach_taxon_names()
-bs4_rows_comb <- combined_l4_rows %>% select(area_key, taxa, authority, info)
+bs4_rows_comb <- combined_l4_rows %>% select(area_key, taxa, authority, WCFP_ID, info)
 
 # Display names for every L4 area any source touches, not just the ones
 # reaching the >=2-source threshold (area_l4_lookup already spans all three).
@@ -3240,6 +3665,7 @@ bs4_area_names <- setNames(
 
 by_source_l4_payload <- list(
   areaNames = as.list(bs4_area_names),
+  areaCodes = AREA_CODES_L4,
   hideLabels = list(COMBINED_LAYER),
   headers   = setNames(as.list(c("Occurrence source", "Detail",
                                  "Native/introduced status", "Distribution data source")),
@@ -3268,127 +3694,12 @@ bs4_area_counts <- c(
 
 by_source_l4_title_html <- paste0(
   MAP_HEADING,
-  "<div style='font-size:13px; color:#000; margin-top:3px;'>",
+  "<div style='font-size:", UI_PX_SUB, "px; color:#000; margin-top:3px;'>",
   paste0(bs_layer_names, ": ", scales::comma(bs4_taxa_counts), " taxa across ",
          scales::comma(bs4_area_counts), " TDWG Level-4 botanical areas", collapse = "<br>"),
   "</div>"
 )
 
-by_source_l4_leaflet <- leaflet(options = leafletOptions(zoomSnap = 0.05, zoomDelta = 0.5)) %>%
-  # See the combined L4 map above for why the L3 outlines need their own pane
-  # rather than just being added last.
-  addMapPane("l3_outline", zIndex = 450) %>%
-  fitBounds(
-    lng1 = as.numeric(l4_map_bounds["xmin"]), lat1 = as.numeric(l4_map_bounds["ymin"]),
-    lng2 = as.numeric(l4_map_bounds["xmax"]), lat2 = as.numeric(l4_map_bounds["ymax"])
-  ) %>%
-  addPolygons(
-    data        = map_data_occurrences_l4,
-    fillColor   = ~by_source_l4_pal(richness),
-    fillOpacity = 0.8,
-    color       = "black",
-    weight      = 0.5,
-    label       = ~lapply(paste0("<b>", escape_html(Level_4_Na), "</b>: ",
-                                 scales::comma(ifelse(is.na(richness), 0, richness)),
-                                 " taxa"), htmltools::HTML),
-    popup       = ~popup_stub(LBL_OCC, Level4_cod, Level_4_Na, !is.na(richness)),
-    popupOptions = WCFP_POPUP_OPTIONS,
-    group       = LBL_OCC,
-    highlightOptions = highlightOptions(weight = 2.5, color = "#000000", opacity = 1,
-                                        bringToFront = TRUE)
-  ) %>%
-  addPolygons(
-    data        = map_data_grin_l4,
-    fillColor   = ~by_source_l4_pal(richness),
-    fillOpacity = 0.8,
-    color       = "black",
-    weight      = 0.5,
-    label       = ~lapply(paste0("<b>", escape_html(Level_4_Na), "</b>: ",
-                                 scales::comma(ifelse(is.na(richness), 0, richness)),
-                                 " taxa"), htmltools::HTML),
-    popup       = ~popup_stub(LBL_GRIN, Level4_cod, Level_4_Na, !is.na(richness)),
-    popupOptions = WCFP_POPUP_OPTIONS,
-    group       = LBL_GRIN,
-    highlightOptions = highlightOptions(weight = 2.5, color = "#000000", opacity = 1,
-                                        bringToFront = TRUE)
-  ) %>%
-  addPolygons(
-    data        = map_data_wcfp_l4,
-    fillColor   = ~by_source_l4_pal(richness),
-    fillOpacity = 0.8,
-    color       = "black",
-    weight      = 0.5,
-    label       = ~lapply(paste0("<b>", escape_html(Level_4_Na), "</b>: ",
-                                 scales::comma(ifelse(is.na(richness), 0, richness)),
-                                 " taxa"), htmltools::HTML),
-    popup       = ~popup_stub(LBL_WCFP, Level4_cod, Level_4_Na, !is.na(richness)),
-    popupOptions = WCFP_POPUP_OPTIONS,
-    group       = LBL_WCFP,
-    highlightOptions = highlightOptions(weight = 2.5, color = "#000000", opacity = 1,
-                                        bringToFront = TRUE)
-  ) %>%
-  addPolygons(
-    data        = map_data_combined_l4,
-    fillColor   = ~by_source_l4_pal(richness),
-    fillOpacity = 0.8,
-    color       = "black",
-    weight      = 0.5,
-    label       = ~lapply(paste0("<b>", escape_html(Level_4_Na), "</b>: ",
-                                 scales::comma(ifelse(is.na(richness), 0, richness)),
-                                 " taxa"), htmltools::HTML),
-    popup       = ~popup_stub(COMBINED_LAYER, Level4_cod, Level_4_Na, !is.na(richness)),
-    popupOptions = WCFP_POPUP_OPTIONS,
-    group       = COMBINED_LAYER,
-    highlightOptions = highlightOptions(weight = 2.5, color = "#000000", opacity = 1,
-                                        bringToFront = TRUE)
-  ) %>%
-  addPolygons(
-    data    = level3_sf,
-    fill    = FALSE,
-    color   = "black",
-    # Heavier than the L4 boundaries (1.3) so the parent TDWG level 3 areas
-    # read as the dominant division, but not so heavy that the L4 mesh inside
-    # them is overwhelmed.
-    weight  = 1.1,
-    opacity = 1,
-    options = pathOptions(interactive = FALSE, pane = "l3_outline")
-  ) %>%
-  # Title is added BEFORE the layers control, and both sit in the same
-  # corner, so the title stacks above the "Distribution data source" layer toggle.
-  addControl(html = by_source_l4_title_html, position = "topleft") %>%
-  addLayersControl(
-    baseGroups = c("Occurrence records", "GRIN-Global distribution data",
-                   "WCFP distribution data", "Confirmed by ≥2 data sources"),
-    position = "topleft",
-    options = layersControlOptions(collapsed = FALSE)
-  ) %>%
-  # Base groups, not overlays: the layers are mutually exclusive, so exactly
-  # one source is ever drawn and they cannot be stacked over one another. The
-  # combined >=2-source layer is the headline result, so it is the one selected
-  # on open; hideGroup() removes the other three, which leaves the radio button
-  # for the combined layer as the checked one.
-  hideGroup(c(LBL_OCC, LBL_GRIN, LBL_WCFP)) %>%
-  # Added after the layers control so it sits below it, keeping the title
-  # and the "Distribution data source" toggle adjacent.
-  addControl(html = click_hint_l4_bs, position = "topleft") %>%
-  addControl(html = by_source_l4_legend_html, position = "bottomright") %>%
-  addControl(html = map_source_strip_l4, position = "bottomright",
-             className = "wcfp-mapsource") %>%
-  addScaleBar(
-    position = "bottomleft",
-    options = scaleBarOptions(maxWidth = 260, metric = TRUE, imperial = FALSE, updateWhenIdle = TRUE)
-  ) %>%
-  htmlwidgets::onRender(by_source_onrender_js) %>%
-  htmlwidgets::onRender(wcfp_popup_js, data = by_source_l4_payload)
-
-by_source_l4_html_path <- file.path(combined_output_dir, "WCFP_taxa_distribution_by_source_L4area_map_interactive.html")
-by_source_l4_lib_tmp <- file.path(combined_output_dir, "lib_tmp_by_source_l4")
-save_widget_selfcontained(
-  widget = by_source_l4_leaflet,
-  file   = by_source_l4_html_path,
-  libdir = by_source_l4_lib_tmp
-)
-message("Interactive by-source L4-level leaflet map saved to: ", by_source_l4_html_path)
 
 
 ## ============================================================================ ##
@@ -3514,7 +3825,7 @@ combined_confirmed_l3 <- combined_l3 %>%
   filter(n_sources >= 2) %>%
   select(-n_sources) %>%
   left_join(area_l3_lookup, by = "area_l3") %>%
-  left_join(wcfp_taxon_lookup, by = c("taxon" = "wcfp_name_match")) %>%
+  attach_accepted_name() %>%
   attach_redlist() %>%
   arrange(area_l3, taxon)
 
@@ -3533,6 +3844,45 @@ cat("(L3 area, taxon) pairs from rolling the L4 result up  :", nrow(l3_rows_from
 cat("(L3 area, taxon) pairs from testing >=2 sources at L3 :", nrow(l3_rows_native), "\n")
 cat("  recovered by applying the threshold at L3           :",
     nrow(dplyr::anti_join(l3_rows_native, l3_rows_from_l4_rollup, by = c("area_l3", "taxon"))), "\n")
+
+# ---------------------------------------- #
+#   Which level 4 areas back each L3 row   #
+# ---------------------------------------- #
+# For every (L3 area, taxon) confirmed at level 3, the level 4 sub-areas inside
+# that L3 area that ALSO confirm it on their own.
+#
+# This is not merely a re-listing of the L3 result: a taxon can qualify at L3
+# without qualifying in any single L4 area, because different sources can
+# record it in different sub-areas and only meet the 2-source threshold once
+# the L3 area is considered whole. Those are exactly the pairs counted as
+# "recovered by applying the threshold at L3" just above - they genuinely have
+# no L4 sub-area, and are labelled as such rather than left blank, so an empty
+# cell can never be misread as missing data.
+CONFIRMED_L3_ONLY <- "confirmed at level 3 only - no single level 4 area qualifies"
+
+l3_l4_subregions <- combined_confirmed_l4 %>%
+  distinct(area_l3, taxon, area_l4_name) %>%
+  arrange(area_l3, taxon, area_l4_name) %>%
+  group_by(area_l3, taxon) %>%
+  summarise(l4_subregions   = paste(area_l4_name, collapse = "; "),
+            n_l4_subregions = dplyr::n(),
+            .groups = "drop")
+
+# One row per (area_l3, taxon) is what makes the join below safe; if this ever
+# stopped holding, the left_join would silently duplicate taxa in every L3
+# sheet and the richness counts would no longer match the map.
+stopifnot(!anyDuplicated(l3_l4_subregions[c("area_l3", "taxon")]))
+
+n_l3_rows_before <- nrow(combined_confirmed_l3)
+combined_confirmed_l3 <- combined_confirmed_l3 %>%
+  left_join(l3_l4_subregions, by = c("area_l3", "taxon")) %>%
+  mutate(
+    n_l4_subregions = dplyr::coalesce(n_l4_subregions, 0L),
+    l4_subregions   = dplyr::coalesce(l4_subregions, CONFIRMED_L3_ONLY)
+  )
+stopifnot(nrow(combined_confirmed_l3) == n_l3_rows_before)
+cat("(L3 area, taxon) rows with no qualifying level 4 sub-area:",
+    sum(combined_confirmed_l3$n_l4_subregions == 0), "\n")
 
 # ---------------------------------------- #
 #   Write one workbook, one sheet/L3 area  #
@@ -3556,13 +3906,21 @@ for (l3 in qualifying_l3_areas) {
   sheet_name <- make_sheet_name(coalesce(area_name, l3), used_sheet_names_l3)
   used_sheet_names_l3 <- c(used_sheet_names_l3, sheet_name)
 
+  # The L3 area name is repeated on every row rather than left implicit in the
+  # sheet name: sheet names are truncated to 31 characters and de-duplicated,
+  # so they are not a reliable record of which area a sheet is, and a sheet
+  # copied out of the workbook would otherwise lose its area entirely.
   l3_data <- combined_confirmed_l3 %>%
     filter(area_l3 == l3) %>%
     transmute(
+      l3_area_code = area_l3,
+      l3_area_name = area_l3_name,
+      WCFP_ID,
       taxa = coalesce(taxon_name_accepted, taxon),
       authority = taxon_authors_accepted,
       iucn_red_list_category_code = rl_code,
       iucn_red_list_category      = unname(RL_LABEL[rl_code]),
+      n_l4_subregions, l4_subregions,
       data_source_occurrences, occurrences_data_source,
       data_source_GRIN, status_GRIN, data_source_WCFP, status_WCFP
     )
@@ -3570,11 +3928,11 @@ for (l3 in qualifying_l3_areas) {
   addWorksheet(wb_l3, sheet_name)
   writeData(wb_l3, sheet_name, l3_data, headerStyle = createStyle(textDecoration = "bold"))
   freezePane(wb_l3, sheet_name, firstRow = TRUE)
-  setColWidths(wb_l3, sheet_name, cols = 1:10,
-               widths = c(38, 22, 16, 24, 22, 22, 14, 20, 14, 20))
+  setColWidths(wb_l3, sheet_name, cols = 1:15,
+               widths = c(14, 30, 10, 38, 22, 16, 24, 14, 46, 22, 22, 14, 20, 14, 20))
 }
 
-l3_xlsx_path <- file.path(combined_output_dir, "WCFP_taxa-lists_by_L3area_2plus_sources.xlsx")
+l3_xlsx_path <- file.path(taxa_lists_dir, "taxa-lists_food-plants_distributions_by-L3_2-or-more-sources.xlsx")
 saveWorkbook(wb_l3, l3_xlsx_path, overwrite = TRUE)
 message("Combined per-L3-area taxa workbook saved to: ", l3_xlsx_path)
 
@@ -3586,25 +3944,113 @@ message("Combined per-L3-area taxa workbook saved to: ", l3_xlsx_path)
 # payload's areaNames lookup either way.
 combined_l3_rows <- combined_confirmed_l3 %>%
   mutate(
-    area_key  = area_l3,
-    taxa      = coalesce(taxon_name_accepted, taxon),
-    authority = coalesce(taxon_authors_accepted, ""),
-    info      = vapply(seq_len(n()), function(i) build_data_source_label(
+    area_key   = area_l3,
+    taxa       = coalesce(taxon_name_accepted, taxon),
+    authority  = coalesce(taxon_authors_accepted, ""),
+    subregions = l4_subregions,
+    info       = vapply(seq_len(n()), function(i) build_data_source_label(
       data_source_occurrences[i], occurrences_data_source[i],
       data_source_GRIN[i], data_source_WCFP[i], status_WCFP[i], status_GRIN[i]
     ), character(1))
   )
 
+# Two detail columns here rather than one, so the level 4 sub-areas travel with
+# the taxon into the popup table AND the Download button's workbook - the
+# download is built from the same rows, so the two cannot disagree. The order
+# of `headers` must match the order of `detail_cols` below; the popup JS takes
+# its column count from `headers`.
 l3_payload <- list(
   areaNames = as.list(setNames(area_l3_lookup$area_l3_name, area_l3_lookup$area_l3)),
+  areaCodes = AREA_CODES_L3,
   hideLabels = list(COMBINED_LAYER),
-  headers   = setNames(list("Distribution data source"), COMBINED_LAYER),
-  layers    = setNames(list(build_layer_export(combined_l3_rows)), COMBINED_LAYER)
+  # Sub-areas moved to LAST and counted in dlOnly: they travel with the taxon
+  # into the downloaded workbook but no longer widen the popup table, where the
+  # list of level 4 codes was the widest column by far.
+  headers   = setNames(list(list("Distribution data source", "TDWG Level-4 sub-areas")),
+                       COMBINED_LAYER),
+  layers    = setNames(list(build_layer_export(combined_l3_rows,
+                                               detail_cols = c("info", "subregions"))),
+                       COMBINED_LAYER),
+  dlOnly    = setNames(list(1L), COMBINED_LAYER)
 )
 
 l3_richness <- combined_confirmed_l3 %>% count(area_l3, name = "richness")
 
-map_data_l3 <- level3_sf %>%
+# ---------------------------------------- #
+#   Combined map at L4 level               #
+# ---------------------------------------- #
+# This block sits AFTER the level 3 aggregation, not with the rest of the level
+# 4 work above, for one reason: its L3 outline overlay labels each area with
+# that area's level 3 richness, and l3_richness does not exist until here.
+# Rolling the L4 result up instead would have kept the block in place but put
+# numbers on it that disagree with the L3 map by 208 (area, taxon) pairs.
+
+# The same geometry the L3 map uses, carrying the same richness column, so the
+# hover label on the L4 map cannot drift from the L3 map's shading.
+#
+# popup_html_l3 makes each L3 area selectable on this map: clicking one opens
+# the level 3 taxa table, with its own Download button, alongside the level 4
+# tables from the shaded layer underneath.
+level3_l4map_sf <- drop_antarctica(level3_sf) %>%
+  left_join(l3_richness, by = c("LEVEL3_COD" = "area_l3")) %>%
+  mutate(
+    popup_html_l3 = ifelse(
+      is.na(richness),
+      paste0("<b>", escape_html(LEVEL3_NAM), "</b><br>No taxa confirmed by ≥2 data sources"),
+      popup_stub(LYR_L3, LEVEL3_COD, LEVEL3_NAM, TRUE)
+    )
+  )
+
+# The L4 map's payload gains a SECOND layer: the level 3 taxa lists, reused
+# from l3_payload rather than rebuilt, so the two maps cannot disagree about
+# what a level 3 area contains.
+#
+# Area codes from the two levels share one lookup here. They cannot collide -
+# WGSRPD level 4 codes are six characters with a hyphen ("ALA-OO"), level 3
+# codes are three letters - but that is asserted rather than assumed, because
+# a collision would silently serve one level's taxa list under the other's
+# name.
+stopifnot(!any(names(l3_payload$areaNames) %in% names(l4_payload$areaNames)))
+
+l4_payload <- list(
+  areaNames  = c(l4_payload$areaNames, l3_payload$areaNames),
+  areaCodes  = c(AREA_CODES_L4, AREA_CODES_L3),
+  hideLabels = l4_payload$hideLabels,
+  headers    = c(l4_payload$headers,
+                 setNames(list(l3_payload$headers[[COMBINED_LAYER]]), LYR_L3)),
+  layers     = c(l4_payload$layers,
+                 setNames(list(l3_payload$layers[[COMBINED_LAYER]]), LYR_L3)),
+  # Both levels keep their own download-only tail: the level 4 tables hide
+  # their parent area, the level 3 tables hide their sub-areas.
+  dlOnly     = c(l4_payload$dlOnly,
+                 setNames(list(l3_payload$dlOnly[[COMBINED_LAYER]]), LYR_L3))
+)
+
+# Same heading wording as the country map above, so the two read as a pair;
+# only the subtitle counts differ (L4/L3 areas rather than countries).
+l4_map_title_html <- sprintf(
+  paste0(MAP_HEADING,
+         "<div style='font-size:", UI_PX_SUB, "px; color:#000; margin-top:3px;'>",
+         "%s taxa across %s TDWG Level-4 botanical areas (%s Level-3 botanical countries)",
+         "<br><span style='font-style:italic;'>Distribution of taxa confirmed in &ge;2 data sources</span></div>"),
+  scales::comma(n_distinct(combined_confirmed_l4$taxon)),
+  scales::comma(n_l4_covered),
+  scales::comma(n_l3_covered)
+)
+
+# L4 boundary weight (1.3) is a little thicker than the country/continent
+# baseline (1) used in the country-level maps above. The L3 outline layer
+# (unfilled, non-interactive) gives visual context for how L4 areas group
+# into their parent TDWG level 3 area.
+
+# Mirror of level3_l4map_sf above: level 4 geometry carrying the level 4
+# richness, for the L4 outline overlay's hover label on the L3 map. Same join
+# as map_data_l4 but without that object's popup column, which would go unused
+# here and whose stubs belong to the L4 map's payload, not this one.
+level4_l3map_sf <- drop_antarctica(level4_sf) %>%
+  left_join(l4_richness, by = c("Level4_cod" = "area_l4"))
+
+map_data_l3 <- drop_antarctica(level3_sf) %>%
   left_join(l3_richness, by = c("LEVEL3_COD" = "area_l3")) %>%
   mutate(
     popup_html = ifelse(
@@ -3621,7 +4067,6 @@ l3_richness_pal <- colorNumeric(
   reverse  = FALSE
 )
 
-l3_map_bounds <- zoom_in_bbox(st_bbox(map_data_l3))
 
 l3_legend_breaks <- pretty(map_data_l3$richness, n = 6)
 l3_legend_breaks <- sort(
@@ -3633,7 +4078,7 @@ l3_legend_html <- build_gradient_legend(l3_richness_pal, l3_legend_breaks)
 
 l3_map_title_html <- sprintf(
   paste0(MAP_HEADING,
-         "<div style='font-size:13px; color:#000; margin-top:3px;'>",
+         "<div style='font-size:", UI_PX_SUB, "px; color:#000; margin-top:3px;'>",
          "%s taxa across %s TDWG Level-3 botanical countries",
          "<br><span style='font-style:italic;'>Distribution of taxa confirmed in &ge;2 data sources</span></div>"),
   scales::comma(n_distinct(combined_confirmed_l3$taxon)),
@@ -3642,80 +4087,11 @@ l3_map_title_html <- sprintf(
 
 click_hint_l3         <- build_click_hint(
   "Click map to view/download food plants taxa list per TDWG Level-3 botanical country")
-map_source_strip_l3   <- build_map_source_strip("TDWG WGSRPD Level-3 botanical countries")
 
 # Boundary weight 1.3 matches the L4 polygons on the level 4 maps rather than
 # the heavier 2.0 used there for the L3 outlines. On those maps the 2.0 marks
 # L3 as the parent division over a finer mesh; here L3 IS the shaded unit, so
 # the same weight would just read as heavy.
-combined_l3_leaflet <- leaflet(map_data_l3,
-                               options = leafletOptions(zoomSnap = 0.05, zoomDelta = 0.5)) %>%
-  # Pane for the L4 subdivision outlines, mirroring the l3_outline pane on the
-  # level 4 maps: above the overlayPane (z 400) that holds the shaded L3
-  # polygons, below markerPane (600) so tooltips and popups stay on top.
-  # Needed for the same reason as there - the L3 layer uses
-  # highlightOptions(bringToFront = TRUE), so without a dedicated pane every
-  # hovered area would be lifted over the outlines and bury them.
-  addMapPane("l4_outline", zIndex = 450) %>%
-  fitBounds(
-    lng1 = as.numeric(l3_map_bounds["xmin"]), lat1 = as.numeric(l3_map_bounds["ymin"]),
-    lng2 = as.numeric(l3_map_bounds["xmax"]), lat2 = as.numeric(l3_map_bounds["ymax"])
-  ) %>%
-  addPolygons(
-    fillColor    = ~l3_richness_pal(richness),
-    fillOpacity  = 0.8,
-    color        = "black",
-    weight       = 1.3,
-    label        = ~lapply(paste0("<b>", escape_html(LEVEL3_NAM), "</b>: ",
-                                  scales::comma(ifelse(is.na(richness), 0, richness)),
-                                  " taxa"), htmltools::HTML),
-    popup        = ~popup_html,
-    popupOptions = WCFP_POPUP_OPTIONS,
-    group        = LYR_L3,
-    highlightOptions = highlightOptions(weight = 4, color = "#000000", opacity = 1,
-                                        bringToFront = TRUE)
-  ) %>%
-  # L4 subdivisions, boundary only. Lighter and thinner than the L3 polygon
-  # edges (1.3, black) so the finer mesh reads as subdivision rather than
-  # competing with the shaded unit. Non-interactive, so it never intercepts a
-  # click meant for the L3 polygon underneath.
-  addPolygons(
-    data    = level4_sf,
-    fill    = FALSE,
-    color   = "#444444",
-    weight  = 0.6,
-    opacity = 0.9,
-    group   = LYR_L4,
-    options = pathOptions(interactive = FALSE, pane = "l4_outline")
-  ) %>%
-  # L3 (the shaded layer) starts on, L4 starts off - this map has always shown
-  # L3 alone, so the overlay is additive rather than a change of default.
-  addLayersControl(
-    overlayGroups = c(LYR_L3, LYR_L4),
-    position = "topleft",
-    options = layersControlOptions(collapsed = FALSE)
-  ) %>%
-  hideGroup(LYR_L4) %>%
-  addControl(html = l3_legend_html, position = "bottomright") %>%
-  addControl(html = map_source_strip_l3, position = "bottomright",
-             className = "wcfp-mapsource") %>%
-  addControl(html = l3_map_title_html, position = "topleft") %>%
-  addControl(html = click_hint_l3, position = "topleft") %>%
-  addScaleBar(
-    position = "bottomleft",
-    options = scaleBarOptions(maxWidth = 260, metric = TRUE, imperial = FALSE, updateWhenIdle = TRUE)
-  ) %>%
-  htmlwidgets::onRender(map_base_onrender_js) %>%
-  htmlwidgets::onRender(wcfp_popup_js, data = l3_payload)
-
-l3_html_path <- file.path(combined_output_dir, "WCFP_taxa_distribution_L3area_map_interactive.html")
-l3_lib_tmp <- file.path(combined_output_dir, "lib_tmp_l3")
-save_widget_selfcontained(
-  widget = combined_l3_leaflet,
-  file   = l3_html_path,
-  libdir = l3_lib_tmp
-)
-message("Interactive L3-level leaflet map saved to: ", l3_html_path)
 
 # ---------------------------------------- #
 #   By-source toggle map at L3 level       #
@@ -3727,13 +4103,13 @@ richness_occurrences_l3 <- src_occurrences_l3 %>% count(area_l3, name = "richnes
 richness_grin_l3        <- src_grin_l3        %>% count(area_l3, name = "richness")
 richness_wcfp_l3        <- src_wcfp_l3        %>% count(area_l3, name = "richness")
 
-map_data_occurrences_l3 <- level3_sf %>% left_join(richness_occurrences_l3, by = c("LEVEL3_COD" = "area_l3"))
-map_data_grin_l3        <- level3_sf %>% left_join(richness_grin_l3,        by = c("LEVEL3_COD" = "area_l3"))
-map_data_wcfp_l3        <- level3_sf %>% left_join(richness_wcfp_l3,        by = c("LEVEL3_COD" = "area_l3"))
+map_data_occurrences_l3 <- drop_antarctica(level3_sf) %>% left_join(richness_occurrences_l3, by = c("LEVEL3_COD" = "area_l3"))
+map_data_grin_l3        <- drop_antarctica(level3_sf) %>% left_join(richness_grin_l3,        by = c("LEVEL3_COD" = "area_l3"))
+map_data_wcfp_l3        <- drop_antarctica(level3_sf) %>% left_join(richness_wcfp_l3,        by = c("LEVEL3_COD" = "area_l3"))
 
 # Fourth layer: the ">=2 of 3 sources" result, reusing the same `l3_richness`
 # that drives the combined L3 map above.
-map_data_combined_l3    <- level3_sf %>% left_join(l3_richness,             by = c("LEVEL3_COD" = "area_l3"))
+map_data_combined_l3    <- drop_antarctica(level3_sf) %>% left_join(l3_richness,             by = c("LEVEL3_COD" = "area_l3"))
 
 # Shared palette/domain across all 4 layers, combined layer included so its
 # values can never fall outside the palette range.
@@ -3765,10 +4141,11 @@ bs3_rows_grin <- src_grin_l3 %>%
   transmute(area_key = area_l3, taxon, info = grin_status) %>% attach_taxon_names()
 bs3_rows_wcfp <- src_wcfp_l3 %>%
   transmute(area_key = area_l3, taxon, info = occurrence_status) %>% attach_taxon_names()
-bs3_rows_comb <- combined_l3_rows %>% select(area_key, taxa, authority, info)
+bs3_rows_comb <- combined_l3_rows %>% select(area_key, taxa, authority, WCFP_ID, info)
 
 by_source_l3_payload <- list(
   areaNames = as.list(setNames(area_l3_lookup$area_l3_name, area_l3_lookup$area_l3)),
+  areaCodes = AREA_CODES_L3,
   hideLabels = list(COMBINED_LAYER),
   headers   = setNames(as.list(c("Occurrence source", "Detail",
                                  "Native/introduced status", "Distribution data source")),
@@ -3795,7 +4172,7 @@ bs3_area_counts <- c(
 
 by_source_l3_title_html <- paste0(
   MAP_HEADING,
-  "<div style='font-size:13px; color:#000; margin-top:3px;'>",
+  "<div style='font-size:", UI_PX_SUB, "px; color:#000; margin-top:3px;'>",
   paste0(bs_layer_names, ": ", scales::comma(bs3_taxa_counts), " taxa across ",
          scales::comma(bs3_area_counts), " TDWG Level-3 botanical countries", collapse = "<br>"),
   "</div>"
@@ -3805,104 +4182,6 @@ click_hint_l3_bs <- build_click_hint(paste0(
   "Select one distribution data source - layers are exclusive, not stacked<br>",
   "Click map to view/download food plants taxa list per TDWG Level-3 botanical country, for the selected data source"))
 
-by_source_l3_leaflet <- leaflet(options = leafletOptions(zoomSnap = 0.05, zoomDelta = 0.5)) %>%
-  fitBounds(
-    lng1 = as.numeric(l3_map_bounds["xmin"]), lat1 = as.numeric(l3_map_bounds["ymin"]),
-    lng2 = as.numeric(l3_map_bounds["xmax"]), lat2 = as.numeric(l3_map_bounds["ymax"])
-  ) %>%
-  addPolygons(
-    data        = map_data_occurrences_l3,
-    fillColor   = ~by_source_l3_pal(richness),
-    fillOpacity = 0.8,
-    color       = "black",
-    weight      = 1.3,
-    label       = ~lapply(paste0("<b>", escape_html(LEVEL3_NAM), "</b>: ",
-                                 scales::comma(ifelse(is.na(richness), 0, richness)),
-                                 " taxa"), htmltools::HTML),
-    popup       = ~popup_stub(LBL_OCC, LEVEL3_COD, LEVEL3_NAM, !is.na(richness)),
-    popupOptions = WCFP_POPUP_OPTIONS,
-    group       = LBL_OCC,
-    highlightOptions = highlightOptions(weight = 4, color = "#000000", opacity = 1,
-                                        bringToFront = TRUE)
-  ) %>%
-  addPolygons(
-    data        = map_data_grin_l3,
-    fillColor   = ~by_source_l3_pal(richness),
-    fillOpacity = 0.8,
-    color       = "black",
-    weight      = 1.3,
-    label       = ~lapply(paste0("<b>", escape_html(LEVEL3_NAM), "</b>: ",
-                                 scales::comma(ifelse(is.na(richness), 0, richness)),
-                                 " taxa"), htmltools::HTML),
-    popup       = ~popup_stub(LBL_GRIN, LEVEL3_COD, LEVEL3_NAM, !is.na(richness)),
-    popupOptions = WCFP_POPUP_OPTIONS,
-    group       = LBL_GRIN,
-    highlightOptions = highlightOptions(weight = 4, color = "#000000", opacity = 1,
-                                        bringToFront = TRUE)
-  ) %>%
-  addPolygons(
-    data        = map_data_wcfp_l3,
-    fillColor   = ~by_source_l3_pal(richness),
-    fillOpacity = 0.8,
-    color       = "black",
-    weight      = 1.3,
-    label       = ~lapply(paste0("<b>", escape_html(LEVEL3_NAM), "</b>: ",
-                                 scales::comma(ifelse(is.na(richness), 0, richness)),
-                                 " taxa"), htmltools::HTML),
-    popup       = ~popup_stub(LBL_WCFP, LEVEL3_COD, LEVEL3_NAM, !is.na(richness)),
-    popupOptions = WCFP_POPUP_OPTIONS,
-    group       = LBL_WCFP,
-    highlightOptions = highlightOptions(weight = 4, color = "#000000", opacity = 1,
-                                        bringToFront = TRUE)
-  ) %>%
-  addPolygons(
-    data        = map_data_combined_l3,
-    fillColor   = ~by_source_l3_pal(richness),
-    fillOpacity = 0.8,
-    color       = "black",
-    weight      = 1.3,
-    label       = ~lapply(paste0("<b>", escape_html(LEVEL3_NAM), "</b>: ",
-                                 scales::comma(ifelse(is.na(richness), 0, richness)),
-                                 " taxa"), htmltools::HTML),
-    popup       = ~popup_stub(COMBINED_LAYER, LEVEL3_COD, LEVEL3_NAM, !is.na(richness)),
-    popupOptions = WCFP_POPUP_OPTIONS,
-    group       = COMBINED_LAYER,
-    highlightOptions = highlightOptions(weight = 4, color = "#000000", opacity = 1,
-                                        bringToFront = TRUE)
-  ) %>%
-  # Title before the layers control, both in the same corner, so the title
-  # stacks above the "Distribution data source" toggle.
-  addControl(html = by_source_l3_title_html, position = "topleft") %>%
-  addLayersControl(
-    baseGroups = bs_layer_names,
-    position = "topleft",
-    options = layersControlOptions(collapsed = FALSE)
-  ) %>%
-  # Base groups, not overlays: the layers are mutually exclusive, so exactly
-  # one source is ever drawn and they cannot be stacked over one another. The
-  # combined >=2-source layer is the headline result, so it is the one selected
-  # on open; hideGroup() removes the other three, which leaves the radio button
-  # for the combined layer as the checked one.
-  hideGroup(c(LBL_OCC, LBL_GRIN, LBL_WCFP)) %>%
-  addControl(html = click_hint_l3_bs, position = "topleft") %>%
-  addControl(html = by_source_l3_legend_html, position = "bottomright") %>%
-  addControl(html = map_source_strip_l3, position = "bottomright",
-             className = "wcfp-mapsource") %>%
-  addScaleBar(
-    position = "bottomleft",
-    options = scaleBarOptions(maxWidth = 260, metric = TRUE, imperial = FALSE, updateWhenIdle = TRUE)
-  ) %>%
-  htmlwidgets::onRender(by_source_onrender_js) %>%
-  htmlwidgets::onRender(wcfp_popup_js, data = by_source_l3_payload)
-
-by_source_l3_html_path <- file.path(combined_output_dir, "WCFP_taxa_distribution_by_source_L3area_map_interactive.html")
-by_source_l3_lib_tmp <- file.path(combined_output_dir, "lib_tmp_by_source_l3")
-save_widget_selfcontained(
-  widget = by_source_l3_leaflet,
-  file   = by_source_l3_html_path,
-  libdir = by_source_l3_lib_tmp
-)
-message("Interactive by-source L3-level leaflet map saved to: ", by_source_l3_html_path)
 
 ## ============================================================================ ##
 ## IUCN RED LIST TOGGLE MAPS AT LEVEL 3
@@ -3943,40 +4222,37 @@ cat("Red List categories across the", n_distinct(combined_confirmed_l3_rl$taxon)
 print(combined_confirmed_l3_rl %>% distinct(taxon, rl_code) %>%
         count(rl_code, sort = TRUE, name = "taxa"))
 
-# The three layer schemes. Each is an ordered list; the FIRST layer is the one
-# left visible when the map opens, so the most conservation-relevant layer goes
-# first in each.
-rl_scheme_grouped <- list(
-  "Threatened (CR, EN, VU, EW, EX)" = c("CR", "EN", "VU", "EW", "EX"),
-  "Near Threatened (NT)"            = "NT",
-  "Least Concern (LC)"              = "LC",
-  "Data Deficient (DD)"             = "DD",
-  "Not Evaluated (NE)"              = "NE"
+# Both layer schemes run in IUCN severity order, most severe at the top:
+# EX, EW, CR, EN, VU, NT, LC, DD, NE. That is the order RL_SEVERITY already
+# declares, so the schemes are built FROM it rather than retyped - a hand-typed
+# second copy is how the two fall out of step.
+rl_layer <- function(label, codes) setNames(list(codes), label)
+
+# "Threatened" is CR + EN + VU, which is the IUCN definition. EX and EW are
+# NOT threatened categories - they are outcomes - so they get their own layers
+# here rather than being folded in, even though they hold 2 and 4 taxa.
+rl_scheme_grouped <- c(
+  rl_layer("Extinct (EX)",                "EX"),
+  rl_layer("Extinct in the Wild (EW)",    "EW"),
+  rl_layer("Threatened (CR, EN, VU)",     c("CR", "EN", "VU")),
+  rl_layer("Near Threatened (NT)",        "NT"),
+  rl_layer("Least Concern (LC)",          "LC"),
+  rl_layer("Data Deficient (DD)",         "DD"),
+  rl_layer("Not Evaluated (NE)",          "NE")
 )
-# EW (4 taxa) and EX (2) are folded into Threatened above rather than given
-# their own near-empty layers; they appear separately in the version below.
-rl_scheme_categories <- list(
-  "Critically Endangered (CR)" = "CR",
-  "Endangered (EN)"            = "EN",
-  "Vulnerable (VU)"            = "VU",
-  "Extinct in the Wild (EW)"   = "EW",
-  "Extinct (EX)"               = "EX",
-  "Near Threatened (NT)"       = "NT",
-  "Least Concern (LC)"         = "LC",
-  "Data Deficient (DD)"        = "DD",
-  "Not Evaluated (NE)"         = "NE"
-)
-rl_scheme_threatened <- list(
-  "Threatened (CR, EN, VU, EW, EX)" = c("CR", "EN", "VU", "EW", "EX"),
-  "Not threatened (NT, LC, DD)"     = c("NT", "LC", "DD"),
-  "Not Evaluated (NE)"              = "NE"
-)
+
+rl_scheme_categories <- setNames(
+  as.list(RL_SEVERITY),
+  paste0(unname(RL_LABEL[RL_SEVERITY]), " (", RL_SEVERITY, ")"))
+# A third scheme - Threatened / Not threatened / Not Evaluated - was dropped.
+# Its threatened layer was identical to rl_scheme_grouped's, so the map added a
+# coarser view of something already on the grouped map.
 
 # Each scheme must cover all nine categories exactly once. A missing category
 # would silently drop those taxa from the map; a repeated one would draw them
 # on two layers and double-count them in the subtitle. Neither is visible by
 # eye on a finished map, so it is checked here.
-for (.nm in c("rl_scheme_grouped", "rl_scheme_categories", "rl_scheme_threatened")) {
+for (.nm in c("rl_scheme_grouped", "rl_scheme_categories")) {
   .codes <- unlist(get(.nm), use.names = FALSE)
   if (anyDuplicated(.codes) > 0 || !setequal(.codes, RL_SEVERITY)) {
     stop(.nm, " does not partition the Red List categories exactly once.",
@@ -3985,6 +4261,71 @@ for (.nm in c("rl_scheme_grouped", "rl_scheme_categories", "rl_scheme_threatened
          "  | unknown: ", paste(setdiff(.codes, RL_SEVERITY), collapse = ", "))
   }
 }
+
+## ------------------------------------------------------------------ ##
+## One colour ramp per Red List category, anchored on the OFFICIAL IUCN
+## category colours - black for Extinct, purple for Extinct in the Wild, red /
+## orange / yellow for the three threatened categories, and so on down to grey
+## for Data Deficient.
+##
+## Each ramp runs light -> category colour -> a darkened version of it, so
+## within a layer DARKER IS MORE TAXA while the hue still says which category
+## the reader is looking at.
+##
+## The light end is a visible TINT, never pure white, because white is the
+## na.color: an area with no taxa in this category must not look the same as an
+## area with the fewest. That distinction carries most of the meaning on the
+## Extinct layer, where 2 taxa are shaded and everywhere else is empty.
+## ------------------------------------------------------------------ ##
+## The official IUCN colour is a STOP in every ramp, not merely an inspiration.
+## For EX and EW - already dark - it is the top of the ramp. For the rest it is
+## the middle, with a darkened version above it, so the busiest areas still
+## separate from the merely-present ones.
+##
+## NE is the exception: IUCN's colour for Not Evaluated is white, which cannot
+## be a stop here (white is reserved for "no taxa"), so it runs neutral grey.
+RL_IUCN_COLOUR <- c(EX = "#000000", EW = "#542344", CR = "#D81E05",
+                    EN = "#FC7F3F", VU = "#F9E814", NT = "#CCE226",
+                    LC = "#60C659", DD = "#D1D1C6", NE = "#FFFFFF")
+
+RL_RAMP <- list(
+  # EX drops to black hard rather than drifting through mid greys: the mid stop
+  # is well below the halfway tone, so most of the ramp is already dark and the
+  # step to black reads as a step.
+  EX = c("#E6E6E6", "#4A4A4A", "#000000"),   # grey  -> dark grey -> IUCN black
+  EW = c("#E8D7E4", "#8A4A78", "#542344"),   # mauve -> purple   -> IUCN purple
+  CR = c("#FBD5CE", "#D81E05", "#7A1103"),   # pink  -> IUCN red -> deep red
+  EN = c("#FFE2CC", "#FC7F3F", "#A04A14"),   # peach -> IUCN orange
+  VU = c("#FCF6B8", "#F9E814", "#8A7B00"),   # cream -> IUCN yellow
+  NT = c("#EDF5B8", "#CCE226", "#6E7A10"),   # pale  -> IUCN olive-green
+  LC = c("#D6F0D3", "#60C659", "#1F5A1C"),   # pale  -> IUCN green
+  DD = c("#F2F2ED", "#D1D1C6", "#6B6B5C"),   # light -> IUCN grey
+  # Not Evaluated reuses the Data Deficient greys and is told apart by a
+  # DIAGONAL HATCH instead of a different hue - the two mean similar things
+  # ("we cannot say"), so a shared colour with a texture difference says that
+  # better than inventing a ninth hue. RL_HATCH_LAYERS below drives the hatch.
+  NE = c("#F2F2ED", "#D1D1C6", "#6B6B5C")    # same as DD, hatched
+)
+
+# Categories drawn with a hatch overlay on top of their graded fill.
+RL_HATCH <- "NE"
+
+# The grouped map's Threatened layer spans three categories, so its ramp walks
+# their three colours in severity order: Vulnerable yellow, Endangered orange,
+# Critically Endangered red. Hotter and darker is more taxa.
+RL_RAMP_THREATENED <- c("#FFF7B2", "#F9E814", "#FC7F3F", "#D81E05")
+
+## Ramp for one layer, chosen from the categories it contains.
+rl_ramp_for <- function(codes) {
+  if (length(codes) == 1) return(RL_RAMP[[codes]])
+  if (setequal(codes, c("CR", "EN", "VU"))) return(RL_RAMP_THREATENED)
+  # Any other grouping falls back to the most severe category it holds, so a
+  # future scheme still gets a sensible ramp rather than an error.
+  RL_RAMP[[RL_SEVERITY[min(match(codes, RL_SEVERITY))]]]
+}
+
+# Every category must have a ramp, or a layer would silently fall back.
+stopifnot(setequal(names(RL_RAMP), RL_SEVERITY))
 
 ## ------------------------------------------------------------------ ##
 ## Per-layer colour scales, and a legend that follows the active layer.
@@ -4016,22 +4357,11 @@ build_redlist_legends <- function(layer_names, pals, breaks_list) {
   paste0("<div class=\"wcfp-rl-legends\">", paste(inner, collapse = ""), "</div>")
 }
 
-redlist_onrender_js <- paste0("function(el, x) {", map_onrender_common_js, "
-  function addLayersTitle() {
-    var lc = el.querySelector('.leaflet-control-layers');
-    if (!lc) { return false; }
-    if (lc.querySelector('.wcfp-layers-title')) { return true; }
-    var h = document.createElement('div');
-    h.className = 'wcfp-layers-title';
-    h.textContent = 'IUCN Red List category';
-    h.style.fontWeight = 'bold';
-    h.style.fontSize = '13px';
-    h.style.marginBottom = '5px';
-    var list = lc.querySelector('.leaflet-control-layers-list') || lc;
-    list.insertBefore(h, list.firstChild);
-    return true;
-  }
-  if (!addLayersTitle()) { setTimeout(addLayersTitle, 200); }
+## Shows the legend belonging to the selected layer. Extracted from the Red
+## List onRender because the merged L3+L4 maps need exactly the same behaviour:
+## whenever one map carries layers on DIFFERENT colour scales, only the active
+## layer's legend may be on screen.
+legend_sync_js <- "
 
   // Show the legend belonging to the selected layer. The layers are base
   // groups, so exactly one is ever on and exactly one legend ever shows -
@@ -4070,12 +4400,28 @@ redlist_onrender_js <- paste0("function(el, x) {", map_onrender_common_js, "
     return true;
   }
   if (!initLegendSync()) { setTimeout(initLegendSync, 200); }
-}")
+"
+
+redlist_onrender_js <- make_layers_title_js("IUCN Red List category",
+                                            extra = legend_sync_js)
+# Same legend syncing, but the control is a list of TDWG resolutions rather
+# than Red List categories - used by the merged L3+L4 maps further down.
+tdwg_multi_onrender_js <- make_layers_title_js("TDWG areas", extra = legend_sync_js)
 
 ## Builds one Red List toggle map from a scheme. Everything that differs
 ## between the three versions is in `layer_defs` and `out_name`.
-build_redlist_l3_map <- function(layer_defs, out_name, lib_name) {
+##
+## Filled in by each call, read by the Equal Earth section at the end.
+EQEARTH_REDLIST <- list()
+
+## `default_layer` is the one showing when the map opens. It is separate from
+## the layer ORDER now that the layers run in IUCN severity order: the top of
+## the list is Extinct, which holds 2 taxa, and a map that opens on an almost
+## empty world looks broken. It must name one of the layers.
+build_redlist_l3_spec <- function(layer_defs, out_name, default_layer = NULL) {
   layer_names <- names(layer_defs)
+  if (is.null(default_layer)) default_layer <- layer_names[1]
+  stopifnot(length(default_layer) == 1, default_layer %in% layer_names)
 
   # One richness surface + palette + legend breaks per layer.
   mdata <- lapply(layer_defs, function(codes) {
@@ -4083,15 +4429,20 @@ build_redlist_l3_map <- function(layer_defs, out_name, lib_name) {
       filter(rl_code %in% codes) %>%
       distinct(area_l3, taxon) %>%
       count(area_l3, name = "richness")
-    level3_sf %>% left_join(r, by = c("LEVEL3_COD" = "area_l3"))
+    drop_antarctica(level3_sf) %>% left_join(r, by = c("LEVEL3_COD" = "area_l3"))
   })
 
-  pals <- lapply(mdata, function(m) {
+  # One ramp per layer, taken from the IUCN category colours rather than a
+  # single shared YlGn - so the layer's hue says which category it is, and
+  # darkness within it says how many taxa.
+  pals <- lapply(seq_along(layer_defs), function(i) {
+    m  <- mdata[[i]]
     hi <- suppressWarnings(max(m$richness, na.rm = TRUE))
     # A layer can legitimately be empty (no area reaches it); colorNumeric
     # cannot take an all-NA domain, so fall back to a nominal range.
     if (!is.finite(hi)) hi <- 1
-    colorNumeric(palette = "YlGn", domain = c(0, hi), na.color = "#FFFFFF", reverse = FALSE)
+    colorNumeric(palette = rl_ramp_for(layer_defs[[i]]), domain = c(0, hi),
+                 na.color = "#FFFFFF", reverse = FALSE)
   })
 
   brks <- lapply(mdata, function(m) {
@@ -4106,6 +4457,7 @@ build_redlist_l3_map <- function(layer_defs, out_name, lib_name) {
 
   payload <- list(
     areaNames = as.list(setNames(area_l3_lookup$area_l3_name, area_l3_lookup$area_l3)),
+    areaCodes = AREA_CODES_L3,
     hideLabels = list(COMBINED_LAYER),
     # Three detail columns here, not one - the popup JS reads the count from
     # this entry. rep(list(...)) rather than rep(...) so each layer gets the
@@ -4124,6 +4476,7 @@ build_redlist_l3_map <- function(layer_defs, out_name, lib_name) {
           filter(rl_code %in% codes) %>%
           transmute(
             area_key    = area_l3,
+            WCFP_ID,
             taxa        = coalesce(taxon_name_accepted, taxon),
             authority   = coalesce(taxon_authors_accepted, ""),
             rl_cat_code = rl_code,
@@ -4143,7 +4496,7 @@ build_redlist_l3_map <- function(layer_defs, out_name, lib_name) {
 
   title_html <- paste0(
     MAP_HEADING,
-    "<div style='font-size:13px; color:#000; margin-top:3px;'>",
+    "<div style='font-size:", UI_PX_SUB, "px; color:#000; margin-top:3px;'>",
     paste0(layer_names, ": ", scales::comma(taxa_counts), " taxa across ",
            scales::comma(area_counts), " TDWG Level-3 botanical countries", collapse = "<br>"),
     "<br><span style='font-style:italic;'>Distribution of taxa confirmed in &ge;2 data sources</span></div>"
@@ -4155,127 +4508,970 @@ build_redlist_l3_map <- function(layer_defs, out_name, lib_name) {
     "Click map to view/download food plants taxa list per TDWG Level-3 botanical country, ",
     "for the selected category"))
 
-  mp <- leaflet(options = leafletOptions(zoomSnap = 0.05, zoomDelta = 0.5)) %>%
-    fitBounds(
-      lng1 = as.numeric(l3_map_bounds["xmin"]), lat1 = as.numeric(l3_map_bounds["ymin"]),
-      lng2 = as.numeric(l3_map_bounds["xmax"]), lat2 = as.numeric(l3_map_bounds["ymax"])
-    )
 
-  for (i in seq_along(layer_names)) {
-    # Colour/label/popup are precomputed as plain columns rather than passed as
-    # palette formulas: inside this loop a ~formula would be evaluated later,
-    # against whichever `i` the loop had finished on.
-    m <- mdata[[i]] %>%
-      mutate(
-        fill_col = pals[[i]](richness),
-        lab_txt  = paste0("<b>", escape_html(LEVEL3_NAM), "</b>: ",
-                          scales::comma(ifelse(is.na(richness), 0, richness)), " taxa"),
-        pop_html = popup_stub(layer_names[i], LEVEL3_COD, LEVEL3_NAM, !is.na(richness))
-      )
-    mp <- mp %>% addPolygons(
-      data         = m,
-      fillColor    = ~fill_col,
-      fillOpacity  = 0.8,
-      color        = "black",
-      weight       = 1.3,
-      label        = ~lapply(lab_txt, htmltools::HTML),
-      popup        = ~pop_html,
-      popupOptions = WCFP_POPUP_OPTIONS,
-      group        = layer_names[i],
-      highlightOptions = highlightOptions(weight = 4, color = "#000000", opacity = 1,
-                                          bringToFront = TRUE)
-    )
+  # Everything the Equal Earth rebuild needs is local to this function, so it
+  # is recorded here rather than recomputed later. `<<-` is deliberate: the
+  # alternative is returning a structure and restructuring all three call
+  # sites, for a value only one later section reads.
+  EQEARTH_REDLIST[[out_name]] <<- list(
+    layer_names = layer_names, mdata = mdata, pals = pals,
+    # layer_codes travels too, so the Equal Earth rebuild can tell which layer
+    # is the hatched category without re-deriving it from the layer NAME.
+    layer_codes = layer_defs,
+    title_html = title_html, hint = hint, default_layer = default_layer,
+    legend_html = legend_html, payload = payload)
+
+}
+
+build_redlist_l3_spec(
+  rl_scheme_grouped,
+  "map_food-plants_IUCN-grouped_distributions_by-L3_2-or-more-sources.html",
+  default_layer = "Threatened (CR, EN, VU)")
+build_redlist_l3_spec(
+  rl_scheme_categories,
+  "map_food-plants_IUCN-categories_distributions_by-L3_2-or-more-sources.html",
+  default_layer = "Critically Endangered (CR)")
+
+# The static L3 figure is built with the other two at the end of this file -
+# see "STATIC MAPS". `map_data_l3` above is what it draws.
+
+
+## ================================================================== ##
+##   EQUAL EARTH VERSIONS OF EVERY INTERACTIVE MAP                    ##
+## ================================================================== ##
+## Equal Earth (EPSG:8857) is an equal-area projection. Web Mercator is not:
+## it inflates high latitudes enormously, so on the Mercator maps Greenland
+## reads as comparable in size to Africa when it is about a fourteenth of it.
+## For a map whose whole subject is how many taxa occur in an AREA, that is a
+## real distortion of the message, which is why this second set exists.
+##
+## HOW IT WORKS, AND WHY IT LOOKS ODD
+##
+## Leaflet cannot project to Equal Earth. Its client-side projection library
+## is proj4js 2.6.2, which does not implement +proj=eqearth - asking it to
+## throws, and the map renders as an empty div. Tested, not assumed.
+##
+## So the browser is never asked to project anything. PROJ does the work here,
+## the result is scaled into a small numeric range, and the CRS is then
+## RELABELLED as 4326 so leaflet passes the coordinates through untouched.
+## With L.CRS.Simple, leaflet treats lng as x and lat as y and does no
+## projection maths at all, so what renders is exactly what PROJ produced.
+##
+## Consequences, all deliberate:
+##   - No scale bar. The coordinates are neither degrees nor metres, so any
+##     distance leaflet computed from them would be wrong. Omitted rather than
+##     shown wrongly.
+##   - Panning past the edge of the world is possible; there is no wrapping.
+##   - The blue background fills the whole rectangle, including the corners
+##     outside the projected earth. Those corners are not ocean.
+##
+## This section deliberately sits LAST. It reuses objects built above rather
+## than recomputing them, and if anything here fails, every Mercator output
+## has already been written to disk.
+
+EE_CRS   <- "EPSG:8857"
+EE_SCALE <- 1e5   # metres -> map units; the world becomes about 340 x 172
+
+# Fraction of the data extent ADDED on each side when the map opens, so the
+# world is not pressed against the edges of the pane. See build_eqearth_map().
+EE_ZOOM_OUT <- 0.10
+
+# Longest the scale bar is allowed to be, in screen pixels. The bar is then
+# rounded DOWN to a 1/2/2.5/5 x 10^n distance that fits, so this is the knob
+# for how big it reads, not an exact width.
+EE_SCALEBAR_MAX_PX <- 170
+
+# The selectable level 3 overlay on the level 4 maps is a VEIL, not a fill:
+# enough tint to show which level 3 area the cursor is in, little enough that
+# the level 4 shading underneath still reads. It also has to be a fill at all,
+# because an unpainted SVG interior is not a click target - that is what makes
+# each level 3 area individually selectable for its own taxa list.
+#
+# Neutral slate rather than a colour, so it mutes the choropleth underneath
+# without shifting its hues.
+EE_GHOST_FILL    <- "#5A6672"
+EE_GHOST_OPACITY <- 0.16
+
+equal_earth_output_dir <- equal_earth_dir
+
+## Reproject to Equal Earth and relabel as 4326. Two repairs are needed and
+## both were found by looking at the output, not by anticipating them:
+##   - level3_sf has 7 invalid polygons before reprojection and 1 after
+##   - polygons spanning +-180 (Russia, Fiji, the Aleutians) are drawn as a
+##     horizontal smear straight across the map unless cut at the antimeridian
+##     FIRST, while the data is still in degrees
+## The projection itself, returning GENUINE EPSG:8857. Split out from
+## to_equal_earth() because the static ggplot maps at the end of this file want
+## real Equal Earth coordinates - ggplot can project properly, so it has no use
+## for the scale-and-relabel trick leaflet needs. Both callers therefore share
+## one set of dateline and validity repairs instead of keeping two copies.
+project_equal_earth <- function(x, what = "layer") {
+  b0 <- sum(!st_is_valid(x))
+  if (b0) x <- st_make_valid(x)
+  x <- suppressWarnings(
+    st_wrap_dateline(x, options = c("WRAPDATELINE=YES", "DATELINEOFFSET=10")))
+  y <- st_transform(x, EE_CRS)
+  b1 <- sum(!st_is_valid(y))
+  if (b1) y <- st_make_valid(y)
+  b2 <- sum(!st_is_valid(y))
+  if (b0 || b1 || b2)
+    message("  ", what, ": repaired ", b0, " before / ", b1,
+            " after reprojection", if (b2) paste0("; ", b2, " STILL INVALID") else "")
+  y
+}
+
+to_equal_earth <- function(x, what = "layer") {
+  y <- project_equal_earth(x, what)
+  st_geometry(y) <- st_geometry(y) / EE_SCALE
+  suppressWarnings(st_set_crs(y, 4326))
+}
+
+## Graticule, for the Equal Earth maps only.
+##
+## Mercator does not need one: its meridians are vertical and its parallels
+## horizontal, so a grid adds nothing a straight edge does not already say.
+## Equal Earth curves both, and without a grid there is no cue that the map is
+## anything other than a squashed rectangle - the curvature IS the information.
+##
+## Includes the +-180 meridians and the +-90 parallels, so the outermost lines
+## trace the edge of the projected world and the map has a visible boundary
+## rather than fading into the background.
+##
+## No dateline wrapping here: these are lines, not polygons, and the two
+## +-180 meridians are meant to be separate edges.
+ee_graticule <- local({
+  g <- st_graticule(lat = seq(-90, 90, 30), lon = seq(-180, 180, 30))
+  g <- st_transform(g, EE_CRS)
+  st_geometry(g) <- st_geometry(g) / EE_SCALE
+  suppressWarnings(st_set_crs(g, 4326))
+})
+
+## One layer of an Equal Earth map. Colour, label and popup are precomputed as
+## plain columns rather than passed as ~formulas: a formula would be evaluated
+## later, by which time the loop variable has moved on. The Red List builder
+## above hit exactly this and carries the same note.
+## `ghost = TRUE` is the third rendering mode, used for the L3 overlay on the
+## L4 map: boundaries drawn as an outline, but with a 1%-opacity fill so the
+## whole area is a click target. An unpainted interior is not a hit target, so
+## without it only the boundary line could be clicked.
+## `hatch = TRUE` is a fourth rendering mode: the SAME geometry drawn again on
+## top of a graded layer, in the same group so the two toggle together, and
+## repainted by ee_hatch_js with an SVG pattern. It carries no colour, label or
+## popup of its own - everything the reader interacts with belongs to the
+## graded layer underneath.
+ee_layer <- function(sf_obj, group, pal = NULL, name_col = NULL,
+                     popup_col = NULL, popup_vec = NULL, label_suffix = " taxa",
+                     outline = FALSE, ghost = FALSE, hatch = FALSE,
+                     color = "black", weight = 0.5,
+                     opacity = 1, pane = NULL, interactive = TRUE) {
+  d <- sf_obj
+  if (!outline && !ghost && !hatch) d$ee_fill <- pal(d$richness)
+  if (!is.null(popup_vec) || !is.null(popup_col)) {
+    d$ee_pop <- if (!is.null(popup_vec)) popup_vec else d[[popup_col]]
+  }
+  if (!is.null(name_col)) {
+    d$ee_lab <- paste0("<b>", escape_html(d[[name_col]]), "</b>: ",
+                       scales::comma(ifelse(is.na(d$richness), 0, d$richness)),
+                       label_suffix)
+  }
+  list(data = d, group = group, outline = outline, ghost = ghost, hatch = hatch,
+       color = color, weight = weight, opacity = opacity, pane = pane,
+       interactive = interactive, has_label = !is.null(name_col),
+       has_popup = "ee_pop" %in% names(d))
+}
+
+## ------------------------------------------------------------------ ##
+## The hatch pattern, and the repaint that applies it.
+##
+## Leaflet polygon fills are solid colours, so a hatch has to come from an SVG
+## <pattern> referenced as fill: url(#wcfp-hatch). Leaflet writes `fill` itself
+## when it styles a path, and re-renders on zoom, so the url() has to be
+## re-applied afterwards - hence the zoomend/moveend handler rather than a
+## single pass at load.
+##
+## TWO strokes, one dark and one light, side by side. Tested against the full
+## Data Deficient ramp: a single dark hatch vanishes on the dark end and a
+## single light one vanishes on the light end, so neither alone works across a
+## graded layer. With both, one of the pair always has contrast.
+## ------------------------------------------------------------------ ##
+ee_hatch_js <- "function(el, x) {
+  var map = this;
+  if (!document.getElementById('wcfp-hatch-defs')) {
+    var ns = 'http://www.w3.org/2000/svg';
+    var svg = document.createElementNS(ns, 'svg');
+    svg.setAttribute('id', 'wcfp-hatch-defs');
+    svg.setAttribute('width', '0'); svg.setAttribute('height', '0');
+    svg.style.position = 'absolute';
+    var defs = document.createElementNS(ns, 'defs');
+    var pat = document.createElementNS(ns, 'pattern');
+    pat.setAttribute('id', 'wcfp-hatch');
+    pat.setAttribute('patternUnits', 'userSpaceOnUse');
+    pat.setAttribute('width', '7'); pat.setAttribute('height', '7');
+    pat.setAttribute('patternTransform', 'rotate(45)');
+    var mk = function(x0, col, w, op) {
+      var ln = document.createElementNS(ns, 'line');
+      ln.setAttribute('x1', x0); ln.setAttribute('y1', '0');
+      ln.setAttribute('x2', x0); ln.setAttribute('y2', '7');
+      ln.setAttribute('stroke', col);
+      ln.setAttribute('stroke-width', w);
+      ln.setAttribute('stroke-opacity', op);
+      return ln;
+    };
+    pat.appendChild(mk('1.2', '#2A2A24', '1.5', '0.85'));
+    pat.appendChild(mk('3.2', '#FFFFFF', '1.3', '0.75'));
+    defs.appendChild(pat); svg.appendChild(defs);
+    document.body.appendChild(svg);
+  }
+  function paintHatch() {
+    var ps = el.querySelectorAll('path.wcfp-hatched');
+    for (var i = 0; i < ps.length; i++) {
+      ps[i].setAttribute('fill', 'url(#wcfp-hatch)');
+      ps[i].setAttribute('fill-opacity', '1');
+    }
+  }
+  paintHatch();
+  map.on('zoomend moveend', paintHatch);
+  setTimeout(paintHatch, 300);
+}"
+
+## ------------------------------------------------------------------ ##
+## Scale bar for the Equal Earth maps.
+##
+## Leaflet's own L.control.scale cannot be used. These maps are drawn with
+## L.CRS.Simple, so Leaflet measures distance as plain Euclidean map units and
+## would label them metres - off by a factor of EE_SCALE.
+##
+## But the relationship is exact and known: the geometry was projected to
+## EPSG:8857, whose units ARE metres, then divided by EE_SCALE. So one map unit
+## is EE_SCALE metres. That constant is interpolated from R below rather than
+## typed into the JS, so the bar cannot drift if EE_SCALE ever changes.
+##
+## Adjustable in two senses: it re-measures on every zoom and pan, and
+## EE_SCALEBAR_MAX_PX sets how long it is allowed to get.
+##
+## Equal Earth is equal-AREA, not conformal, so linear scale varies with
+## latitude. The bar is measured at the centre of the current view and labelled
+## "approx.", the same caveat the static figures carry.
+## ------------------------------------------------------------------ ##
+ee_scalebar_js <- paste0("function(el, x) {
+  var map = this;
+  var KM_PER_UNIT = ", format(EE_SCALE / 1000, scientific = FALSE), ";
+  var MAX_PX = ", EE_SCALEBAR_MAX_PX, ";
+
+  var Ctl = L.Control.extend({
+    options: { position: 'bottomleft' },
+    onAdd: function() {
+      var d = L.DomUtil.create('div', 'wcfp-eescale');
+      d.style.background = 'rgba(255,255,255,0.85)';
+      d.style.padding = '3px 7px 2px 7px';
+      d.style.border = '1px solid #333';
+      d.style.borderRadius = '2px';
+      d.style.font = '11px/1.2 Helvetica, Arial, sans-serif';
+      d.style.color = '#1a1a1a';
+      L.DomEvent.disableClickPropagation(d);
+      return d;
+    }
+  });
+  var ctl = new Ctl();
+  map.addControl(ctl);
+  var box = ctl.getContainer();
+
+  // Largest 1 / 2 / 2.5 / 5 x 10^n distance that still fits inside MAX_PX.
+  function niceDown(v) {
+    var p = Math.pow(10, Math.floor(Math.log(v) / Math.LN10));
+    var f = v / p;
+    var n = (f >= 5) ? 5 : (f >= 2.5) ? 2.5 : (f >= 2) ? 2 : 1;
+    return n * p;
+  }
+
+  function update() {
+    var c = map.getCenter();
+    // One map unit due east of the view centre, measured in screen pixels.
+    var a = map.latLngToContainerPoint([c.lat, c.lng]);
+    var b = map.latLngToContainerPoint([c.lat, c.lng + 1]);
+    var pxPerUnit = Math.abs(b.x - a.x);
+    if (!isFinite(pxPerUnit) || pxPerUnit <= 0) return;
+    var km = niceDown(MAX_PX / pxPerUnit * KM_PER_UNIT);
+    if (!(km > 0)) return;
+    var w = km / KM_PER_UNIT * pxPerUnit;
+    var half = w / 2;
+    box.innerHTML =
+      '<div style=\"display:flex;align-items:flex-end;\">' +
+        '<div style=\"width:' + half + 'px;height:7px;background:#1a1a1a;' +
+          'border:1px solid #1a1a1a;box-sizing:border-box;\"></div>' +
+        '<div style=\"width:' + half + 'px;height:7px;background:#fff;' +
+          'border:1px solid #1a1a1a;border-left:none;box-sizing:border-box;\"></div>' +
+        '<div style=\"margin-left:6px;white-space:nowrap;\">' +
+          km.toLocaleString() + ' km' +
+          '<span style=\"color:#666;font-style:italic;\"> approx.</span>' +
+        '</div>' +
+      '</div>';
+  }
+
+  map.on('zoom zoomend move moveend resize', update);
+  update();
+}")
+
+## Assembles and writes one Equal Earth map. Mirrors the Mercator maps' control
+## order (title, hint, layers) and their base/overlay semantics.
+build_eqearth_map <- function(layers, title_html, hint_html, legend_html,
+                              source_strip, payload, onrender_js,
+                              base_groups = NULL, overlay_groups = NULL,
+                              hidden_groups = NULL, default_group = NULL,
+                              panes = NULL, out_name, lib_name) {
+  # Opens a little wider than the data, so the map is not pressed against the
+  # edges of the pane. zoom_in_bbox() TRIMS by `frac`, so a negative value pads
+  # instead - the same one knob, used in the other direction. Paired with
+  # zoomSnap = 0.05 below, or leaflet would round straight back to the
+  # untrimmed fit and nothing would change.
+  bb <- zoom_in_bbox(st_bbox(layers[[1]]$data), frac = -EE_ZOOM_OUT)
+
+  mp <- leaflet(options = leafletOptions(
+    crs = leafletCRS(crsClass = "L.CRS.Simple"),
+    zoomSnap = 0.05, zoomDelta = 0.5))
+
+  for (p in panes) mp <- mp %>% addMapPane(p$name, zIndex = p$z)
+
+  mp <- mp %>% fitBounds(as.numeric(bb["xmin"]), as.numeric(bb["ymin"]),
+                         as.numeric(bb["xmax"]), as.numeric(bb["ymax"]))
+
+  # Graticule first, so it is drawn UNDER the data. Leaflet renders within a
+  # pane in the order layers are added, and these lines are context, not
+  # content - over the ocean they read clearly, under land they stay out of
+  # the way. Non-interactive so they never intercept a click on an area.
+  mp <- mp %>% addPolylines(
+    data = ee_graticule, color = "#7f9bb0", weight = 0.6, opacity = 0.9,
+    options = pathOptions(interactive = FALSE))
+
+  for (ly in layers) {
+    opts <- if (is.null(ly$pane)) pathOptions(interactive = ly$interactive)
+            else pathOptions(interactive = ly$interactive, pane = ly$pane)
+    if (isTRUE(ly$hatch)) {
+      # Fill colour here is a placeholder: ee_hatch_js replaces it with the
+      # pattern. Non-interactive and unstroked so it is purely a texture over
+      # the graded layer it shares a group with.
+      mp <- mp %>% addPolygons(
+        data = ly$data, fill = TRUE, fillColor = "#000000", fillOpacity = 1,
+        stroke = FALSE, group = ly$group,
+        options = if (is.null(ly$pane))
+                    pathOptions(interactive = FALSE, className = "wcfp-hatched")
+                  else
+                    pathOptions(interactive = FALSE, className = "wcfp-hatched",
+                                pane = ly$pane))
+    } else if (isTRUE(ly$ghost)) {
+      mp <- mp %>% addPolygons(
+        data = ly$data, fill = TRUE,
+        fillColor = EE_GHOST_FILL, fillOpacity = EE_GHOST_OPACITY,
+        color = ly$color, weight = ly$weight, opacity = ly$opacity,
+        group = ly$group, options = opts,
+        label = if (ly$has_label) ~lapply(ee_lab, htmltools::HTML) else NULL,
+        popup = if (ly$has_popup) ~ee_pop else NULL,
+        popupOptions = WCFP_POPUP_OPTIONS)
+    } else if (ly$outline) {
+      mp <- mp %>% addPolygons(
+        data = ly$data, fill = FALSE, color = ly$color, weight = ly$weight,
+        opacity = ly$opacity, group = ly$group, options = opts,
+        label = if (ly$has_label) ~lapply(ee_lab, htmltools::HTML) else NULL)
+    } else {
+      mp <- mp %>% addPolygons(
+        data = ly$data, fillColor = ~ee_fill, fillOpacity = 0.8,
+        color = ly$color, weight = ly$weight, group = ly$group, options = opts,
+        label = if (ly$has_label) ~lapply(ee_lab, htmltools::HTML) else NULL,
+        popup = ~ee_pop, popupOptions = WCFP_POPUP_OPTIONS,
+        highlightOptions = highlightOptions(weight = 4, color = "#000000",
+                                            opacity = 1, bringToFront = TRUE))
+    }
   }
 
   mp <- mp %>%
     addControl(html = title_html, position = "topleft") %>%
-    addLayersControl(
-      baseGroups = layer_names,
-      position = "topleft",
-      options = layersControlOptions(collapsed = FALSE)
-    ) %>%
-    # Base groups, so the categories are mutually exclusive. That matters more
-    # here than on the by-source maps: each layer has its OWN colour scale, so
-    # two drawn at once would be shaded on incomparable ramps. Only the first
-    # is selected on open.
-    hideGroup(layer_names[-1]) %>%
-    addControl(html = hint, position = "topleft") %>%
-    addControl(html = legend_html, position = "bottomright") %>%
-    addControl(html = map_source_strip_l3, position = "bottomright",
-               className = "wcfp-mapsource") %>%
-    addScaleBar(
-      position = "bottomleft",
-      options = scaleBarOptions(maxWidth = 260, metric = TRUE, imperial = FALSE,
-                                updateWhenIdle = TRUE)
-    ) %>%
-    htmlwidgets::onRender(redlist_onrender_js) %>%
-    htmlwidgets::onRender(wcfp_popup_js, data = payload)
+    addControl(html = hint_html,  position = "topleft")
 
-  path <- file.path(combined_output_dir, out_name)
-  save_widget_selfcontained(widget = mp, file = path,
-                            libdir = file.path(combined_output_dir, lib_name))
-  message("Interactive Red List L3 map saved to: ", path)
+  if (!is.null(base_groups) || !is.null(overlay_groups)) {
+    # character(0), not NULL. addLayersControl() serialises a NULL group list
+    # to JSON null and leaflet renders it as an extra, checked entry literally
+    # labelled "null" - a fifth checkbox on a four-layer map. Found in the
+    # smoke test, not by reading the docs.
+    mp <- mp %>% addLayersControl(
+      baseGroups    = if (is.null(base_groups))    character(0) else base_groups,
+      overlayGroups = if (is.null(overlay_groups)) character(0) else overlay_groups,
+      position = "topleft",
+      options = layersControlOptions(collapsed = FALSE))
+  }
+  if (!is.null(hidden_groups)) mp <- mp %>% hideGroup(hidden_groups)
+  # Same reason as the Mercator maps: hideGroup() alone can leave nothing
+  # selected, because addLayersControl() has already left only the first base
+  # group showing.
+  if (!is.null(default_group)) mp <- mp %>% showGroup(default_group)
+
+  mp <- mp %>%
+    addControl(html = legend_html, position = "bottomright") %>%
+    addControl(html = source_strip, position = "bottomright",
+               className = "wcfp-mapsource") %>%
+    htmlwidgets::onRender(onrender_js) %>%
+    # Added as its own onRender rather than folded into onrender_js, because
+    # that argument is one of several different scripts depending on the map.
+    htmlwidgets::onRender(ee_scalebar_js)
+
+  # Only maps that actually draw a hatched layer carry the pattern code.
+  if (any(vapply(layers, function(l) isTRUE(l$hatch), logical(1))))
+    mp <- mp %>% htmlwidgets::onRender(ee_hatch_js)
+
+  if (!is.null(payload))
+    mp <- mp %>% htmlwidgets::onRender(wcfp_popup_js, data = payload)
+
+  path <- file.path(equal_earth_output_dir, out_name)
+  save_widget_selfcontained(
+    widget = mp, file = path,
+    libdir = file.path(equal_earth_output_dir, lib_name))
+  message("Equal Earth map saved to: ", path)
   invisible(path)
 }
 
-build_redlist_l3_map(
-  rl_scheme_grouped,
-  "WCFP_taxa_distribution_by_redlist_grouped_L3area_map_interactive.html",
-  "lib_tmp_rl_grouped")
-build_redlist_l3_map(
-  rl_scheme_categories,
-  "WCFP_taxa_distribution_by_redlist_categories_L3area_map_interactive.html",
-  "lib_tmp_rl_categories")
-build_redlist_l3_map(
-  rl_scheme_threatened,
-  "WCFP_taxa_distribution_by_redlist_threatened_L3area_map_interactive.html",
-  "lib_tmp_rl_threatened")
+## The source strips say which projection the reader is looking at, so they
+## must not claim Web Mercator here.
+ee_strip <- function(src) build_map_source_strip(src, "Equal Earth (EPSG:8857)")
+ee_strip_country <- ee_strip("Natural Earth")
+ee_strip_l4      <- ee_strip("TDWG WGSRPD Level-3 / Level-4")
+ee_strip_l3      <- ee_strip("TDWG WGSRPD Level-3 botanical countries")
 
-# ---------------------------------------- #
-#   Static L3 choropleth (PNG + PDF)       #
-# ---------------------------------------- #
-# Styled to match the static country map (V1, magma, no graticules) so the two
-# publication figures read as a pair. The interactive maps keep YlGn.
-map_data_l3_4326 <- st_transform(map_data_l3, 4326)
+message("Reprojecting map geometry to Equal Earth ...")
+ee_country   <- to_equal_earth(leaflet_map_data,   "country")
+ee_cont      <- to_equal_earth(continent_polys,    "continents")
+ee_occ       <- to_equal_earth(map_data_occurrences, "country/occurrences")
+ee_grin      <- to_equal_earth(map_data_grin,      "country/GRIN")
+ee_wcfp      <- to_equal_earth(map_data_wcfp,      "country/WCFP")
+ee_comb      <- to_equal_earth(map_data_combined,  "country/combined")
+ee_l4        <- to_equal_earth(map_data_l4,        "L4")
+ee_l4_occ    <- to_equal_earth(map_data_occurrences_l4, "L4/occurrences")
+ee_l4_grin   <- to_equal_earth(map_data_grin_l4,   "L4/GRIN")
+ee_l4_wcfp   <- to_equal_earth(map_data_wcfp_l4,   "L4/WCFP")
+ee_l4_comb   <- to_equal_earth(map_data_combined_l4, "L4/combined")
+ee_l3        <- to_equal_earth(map_data_l3,        "L3")
+ee_l3_occ    <- to_equal_earth(map_data_occurrences_l3, "L3/occurrences")
+ee_l3_grin   <- to_equal_earth(map_data_grin_l3,   "L3/GRIN")
+ee_l3_wcfp   <- to_equal_earth(map_data_wcfp_l3,   "L3/WCFP")
+ee_l3_comb   <- to_equal_earth(map_data_combined_l3, "L3/combined")
+ee_l3_on_l4  <- to_equal_earth(level3_l4map_sf,    "L3 outline on L4 map")
+ee_l4_on_l3  <- to_equal_earth(level4_l3map_sf,    "L4 outline on L3 map")
 
-p_l3 <- ggplot(map_data_l3_4326) +
-  geom_sf(aes(fill = richness), color = "gray40", size = 0.15) +
-  scale_fill_viridis_c(
-    option = "magma",
-    direction = -1,
-    na.value = "gray95",
-    name = "Number of food plant taxa"
-  ) +
-  theme(
-    panel.grid = element_line(color = "transparent"),
-    panel.background = element_rect(fill = "white", color = NA),
-    plot.background = element_rect(fill = "white", color = NA),
-    axis.title = element_blank(),
-    axis.text = element_blank(),
-    axis.ticks = element_blank(),
-    legend.position = c(0.03, 0.05),
-    legend.justification = c(0, 0),
-    legend.background = element_rect(fill = "white", color = "black"),
-    legend.key = element_rect(fill = "white", color = NA),
-    legend.box.margin = margin(0, 0, 0, 0)
+# ---- 1. country richness ------------------------------------------- #
+build_eqearth_map(
+  layers = list(
+    ee_layer(ee_country, COMBINED_LAYER, pal = richness_pal, name_col = "admin",
+             popup_col = "popup_html", weight = 1),
+    ee_layer(ee_cont, "continents", outline = TRUE, weight = 1,
+             interactive = FALSE)),
+  title_html = map_title_html, hint_html = click_hint_country,
+  legend_html = legend_html, source_strip = ee_strip_country,
+  payload = country_payload, onrender_js = map_base_onrender_js,
+  out_name = "map_food-plants_distributions_by-country_2-or-more-sources.html",
+  lib_name = "lib_tmp_ee_country")
+
+# ---- 2. country by source ------------------------------------------ #
+build_eqearth_map(
+  layers = list(
+    ee_layer(ee_occ,  LBL_OCC,  pal = by_source_pal, name_col = "admin", weight = 1,
+             popup_vec = popup_stub(LBL_OCC,  ee_occ$admin,  ee_occ$admin,  !is.na(ee_occ$richness))),
+    ee_layer(ee_grin, LBL_GRIN, pal = by_source_pal, name_col = "admin", weight = 1,
+             popup_vec = popup_stub(LBL_GRIN, ee_grin$admin, ee_grin$admin, !is.na(ee_grin$richness))),
+    ee_layer(ee_wcfp, LBL_WCFP, pal = by_source_pal, name_col = "admin", weight = 1,
+             popup_vec = popup_stub(LBL_WCFP, ee_wcfp$admin, ee_wcfp$admin, !is.na(ee_wcfp$richness))),
+    ee_layer(ee_comb, COMBINED_LAYER, pal = by_source_pal, name_col = "admin", weight = 1,
+             popup_vec = popup_stub(COMBINED_LAYER, ee_comb$admin, ee_comb$admin, !is.na(ee_comb$richness))),
+    ee_layer(ee_cont, "continents", outline = TRUE, weight = 1, interactive = FALSE)),
+  title_html = by_source_title_html, hint_html = click_hint_country_bs,
+  legend_html = by_source_legend_html, source_strip = ee_strip_country,
+  payload = by_source_payload, onrender_js = by_source_onrender_js,
+  base_groups = bs_layer_names,
+  hidden_groups = c(LBL_OCC, LBL_GRIN, LBL_WCFP), default_group = COMBINED_LAYER,
+  out_name = "map_food-plants_distributions_by-country_by-data-source.html",
+  lib_name = "lib_tmp_ee_bs_country")
+
+# ---- 3. L4 richness, with the L3 outline overlay -------------------- #
+build_eqearth_map(
+  layers = list(
+    ee_layer(ee_l4, LYR_L4, pal = l4_richness_pal, name_col = "Level_4_Na",
+             popup_col = "popup_html"),
+    # ghost, not outline: a 1%-opacity fill makes each level 3 area clickable
+    # for its own taxa table, matching the Mercator L4 map.
+    ee_layer(ee_l3_on_l4, LYR_L3, ghost = TRUE, weight = 1.1,
+             name_col = "LEVEL3_NAM", label_suffix = " taxa (TDWG Level-3)",
+             popup_col = "popup_html_l3", pane = "l3_outline")),
+  panes = list(list(name = "l3_outline", z = 450)),
+  title_html = l4_map_title_html, hint_html = click_hint_l4,
+  legend_html = l4_legend_html, source_strip = ee_strip_l4,
+  payload = l4_payload, onrender_js = tdwg_onrender_js,
+  base_groups = LYR_L4, overlay_groups = LYR_L3,
+  out_name = "map_food-plants_distributions_by-L4_2-or-more-sources.html",
+  lib_name = "lib_tmp_ee_l4")
+
+# ---- 4. L4 by source ------------------------------------------------ #
+build_eqearth_map(
+  layers = list(
+    ee_layer(ee_l4_occ,  LBL_OCC,  pal = by_source_l4_pal, name_col = "Level_4_Na",
+             popup_vec = popup_stub(LBL_OCC,  ee_l4_occ$Level4_cod,  ee_l4_occ$Level_4_Na,  !is.na(ee_l4_occ$richness))),
+    ee_layer(ee_l4_grin, LBL_GRIN, pal = by_source_l4_pal, name_col = "Level_4_Na",
+             popup_vec = popup_stub(LBL_GRIN, ee_l4_grin$Level4_cod, ee_l4_grin$Level_4_Na, !is.na(ee_l4_grin$richness))),
+    ee_layer(ee_l4_wcfp, LBL_WCFP, pal = by_source_l4_pal, name_col = "Level_4_Na",
+             popup_vec = popup_stub(LBL_WCFP, ee_l4_wcfp$Level4_cod, ee_l4_wcfp$Level_4_Na, !is.na(ee_l4_wcfp$richness))),
+    ee_layer(ee_l4_comb, COMBINED_LAYER, pal = by_source_l4_pal, name_col = "Level_4_Na",
+             popup_vec = popup_stub(COMBINED_LAYER, ee_l4_comb$Level4_cod, ee_l4_comb$Level_4_Na, !is.na(ee_l4_comb$richness)))),
+  title_html = by_source_l4_title_html, hint_html = click_hint_l4_bs,
+  legend_html = by_source_l4_legend_html, source_strip = ee_strip_l4,
+  payload = by_source_l4_payload, onrender_js = by_source_onrender_js,
+  base_groups = bs_layer_names,
+  hidden_groups = c(LBL_OCC, LBL_GRIN, LBL_WCFP), default_group = COMBINED_LAYER,
+  out_name = "map_food-plants_distributions_by-L4_by-data-source.html",
+  lib_name = "lib_tmp_ee_bs_l4")
+
+# ---- 5. L3 richness, with the L4 outline overlay -------------------- #
+build_eqearth_map(
+  layers = list(
+    ee_layer(ee_l3, LYR_L3, pal = l3_richness_pal, name_col = "LEVEL3_NAM",
+             popup_col = "popup_html", weight = 1.3),
+    ee_layer(ee_l4_on_l3, LYR_L4, outline = TRUE, color = "#444444",
+             weight = 0.6, opacity = 0.9, name_col = "Level_4_Na",
+             label_suffix = " taxa (TDWG Level-4)", pane = "l4_outline")),
+  panes = list(list(name = "l4_outline", z = 450)),
+  title_html = l3_map_title_html, hint_html = click_hint_l3,
+  legend_html = l3_legend_html, source_strip = ee_strip_l3,
+  payload = l3_payload, onrender_js = tdwg_onrender_js,
+  base_groups = LYR_L3, overlay_groups = LYR_L4, hidden_groups = LYR_L4,
+  out_name = "map_food-plants_distributions_by-L3_2-or-more-sources.html",
+  lib_name = "lib_tmp_ee_l3")
+
+# ---- 6. L3 by source ------------------------------------------------ #
+build_eqearth_map(
+  layers = list(
+    ee_layer(ee_l3_occ,  LBL_OCC,  pal = by_source_l3_pal, name_col = "LEVEL3_NAM", weight = 1.3,
+             popup_vec = popup_stub(LBL_OCC,  ee_l3_occ$LEVEL3_COD,  ee_l3_occ$LEVEL3_NAM,  !is.na(ee_l3_occ$richness))),
+    ee_layer(ee_l3_grin, LBL_GRIN, pal = by_source_l3_pal, name_col = "LEVEL3_NAM", weight = 1.3,
+             popup_vec = popup_stub(LBL_GRIN, ee_l3_grin$LEVEL3_COD, ee_l3_grin$LEVEL3_NAM, !is.na(ee_l3_grin$richness))),
+    ee_layer(ee_l3_wcfp, LBL_WCFP, pal = by_source_l3_pal, name_col = "LEVEL3_NAM", weight = 1.3,
+             popup_vec = popup_stub(LBL_WCFP, ee_l3_wcfp$LEVEL3_COD, ee_l3_wcfp$LEVEL3_NAM, !is.na(ee_l3_wcfp$richness))),
+    ee_layer(ee_l3_comb, COMBINED_LAYER, pal = by_source_l3_pal, name_col = "LEVEL3_NAM", weight = 1.3,
+             popup_vec = popup_stub(COMBINED_LAYER, ee_l3_comb$LEVEL3_COD, ee_l3_comb$LEVEL3_NAM, !is.na(ee_l3_comb$richness)))),
+  title_html = by_source_l3_title_html, hint_html = click_hint_l3_bs,
+  legend_html = by_source_l3_legend_html, source_strip = ee_strip_l3,
+  payload = by_source_l3_payload, onrender_js = by_source_onrender_js,
+  base_groups = bs_layer_names,
+  hidden_groups = c(LBL_OCC, LBL_GRIN, LBL_WCFP), default_group = COMBINED_LAYER,
+  out_name = "map_food-plants_distributions_by-L3_by-data-source.html",
+  lib_name = "lib_tmp_ee_bs_l3")
+
+# ---- 7-9. the three Red List schemes -------------------------------- #
+# Rebuilt from what build_redlist_l3_map() recorded, so the layers, palettes,
+# legends and payloads are the same objects the Mercator versions used.
+for (nm in names(EQEARTH_REDLIST)) {
+  spec <- EQEARTH_REDLIST[[nm]]
+  # unlist(recursive = FALSE) because the hatched category contributes TWO
+  # entries - the graded fill and the texture over it - and every other
+  # category contributes one.
+  ee_layers <- unlist(lapply(seq_along(spec$layer_names), function(i) {
+    d <- to_equal_earth(spec$mdata[[i]], paste0("RedList/", spec$layer_names[i]))
+    base <- ee_layer(d, spec$layer_names[i], pal = spec$pals[[i]],
+                     name_col = "LEVEL3_NAM", weight = 1.3,
+                     popup_vec = popup_stub(spec$layer_names[i], d$LEVEL3_COD,
+                                            d$LEVEL3_NAM, !is.na(d$richness)))
+    if (identical(unname(spec$layer_codes[[i]]), RL_HATCH))
+      list(base, ee_layer(d, spec$layer_names[i], hatch = TRUE))
+    else list(base)
+  }), recursive = FALSE)
+  build_eqearth_map(
+    layers = ee_layers,
+    title_html = spec$title_html, hint_html = spec$hint,
+    legend_html = spec$legend_html, source_strip = ee_strip_l3,
+    payload = spec$payload, onrender_js = redlist_onrender_js,
+    base_groups = spec$layer_names,
+    # Not layer_names[1]: the layers run in IUCN severity order, so the first
+    # is Extinct (2 taxa). The spec carries which layer should open.
+    hidden_groups = setdiff(spec$layer_names, spec$default_layer),
+    default_group = spec$default_layer,
+    # Same filename as the Mercator twin - the equal_earth/ folder is what
+    # tells them apart. This name is COMPUTED rather than written out, so the
+    # rename that stripped "_equalearth" from the other six files missed it
+    # and these three shipped with the old suffix.
+    out_name = nm,
+    lib_name = paste0("lib_tmp_ee_", gsub("[^a-z0-9]+", "_", tolower(sub("WCFP_taxa_distribution_by_redlist_", "", sub("_L3area.*", "", nm))))))
+}
+
+## ============================================================================ ##
+## MERGED LEVEL 3 + LEVEL 4 MAPS
+##
+## One map carrying BOTH TDWG resolutions as selectable layers, instead of a
+## separate by-L3 map and by-L4 map. Written ALONGSIDE the originals, under
+## `by-L3-L4` names, so the two can be compared before either is dropped.
+##
+## Three things make this more than concatenating two layer lists:
+##
+##  1. POPUP KEYS COLLIDE. Both the L3 and the L4 map stub their popups against
+##     COMBINED_LAYER, so a merged payload would hold one taxa table under that
+##     key and serve it for both resolutions. The layers are therefore re-stubbed
+##     against LYR_L3 / LYR_L4 and the payload rekeyed to match.
+##  2. THE SCALES DIFFER. L3 richness reaches ~3,400 and L4 ~2,500, on separate
+##     palettes, so the map needs one legend per layer and the legend must
+##     follow the selection - hence tdwg_multi_onrender_js.
+##  3. THE LAYER LABEL MATTERS. The single-resolution maps hide it (there is
+##     only one thing to be looking at); here it is the whole point, so
+##     hideLabels is empty and each popup says which resolution it is.
+## Author: Sarah Gora
+## ============================================================================ ##
+
+## Concatenates payload parts, refusing to silently overwrite a key. Every
+## collision this guards against would show the wrong taxa under a real-looking
+## heading, which is exactly the kind of fault a finished map does not reveal.
+merge_payloads <- function(...) {
+  ps <- list(...)
+  join <- function(field) {
+    out <- unlist(lapply(ps, function(p) p[[field]]), recursive = FALSE)
+    dup <- names(out)[duplicated(names(out))]
+    if (length(dup))
+      stop("merge_payloads(): duplicate ", field, " key(s): ",
+           paste(unique(dup), collapse = ", "))
+    out
+  }
+  areas <- unlist(lapply(ps, function(p) p$areaNames), recursive = FALSE)
+  codes <- unlist(lapply(ps, function(p) p$areaCodes), recursive = FALSE)
+  # Area keys CAN repeat across parts - the L4 payload already carries the L3
+  # areas for its overlay - but a repeat must mean the same place.
+  for (nm in unique(names(areas)[duplicated(names(areas))])) {
+    v <- unique(unlist(areas[names(areas) == nm]))
+    if (length(v) != 1)
+      stop("merge_payloads(): area '", nm, "' has ", length(v), " different names")
+  }
+  list(areaNames  = areas[!duplicated(names(areas))],
+       areaCodes  = codes[!duplicated(names(codes))],
+       hideLabels = list(),
+       headers    = join("headers"),
+       layers     = join("layers"),
+       dlOnly     = join("dlOnly"))
+}
+
+## Rebuilds one payload under new layer keys.
+rekey_payload <- function(p, from, to) {
+  stopifnot(length(from) == length(to), all(from %in% names(p$layers)))
+  pick <- function(field) {
+    v <- p[[field]][from]
+    names(v) <- to
+    v[!vapply(v, is.null, logical(1))]
+  }
+  list(areaNames = p$areaNames, areaCodes = p$areaCodes, hideLabels = list(),
+       headers = pick("headers"), layers = pick("layers"), dlOnly = pick("dlOnly"))
+}
+
+merged_tdwg_title <- sprintf(
+  paste0(MAP_HEADING,
+         "<div style='font-size:", UI_PX_SUB, "px; color:#000; margin-top:3px;'>",
+         "%s taxa across %s TDWG Level-3 botanical countries and %s Level-4 areas",
+         "<br><span style='font-style:italic;'>",
+         "Distribution of taxa confirmed in &ge;2 data sources</span></div>"),
+  scales::comma(n_distinct(combined_confirmed_l3$taxon)),
+  scales::comma(n_l3_areas_covered),
+  scales::comma(n_l4_covered))
+
+merged_tdwg_hint <- build_click_hint(paste0(
+  "Select a TDWG resolution - level 3 and level 4 are exclusive, not stacked<br>",
+  "<b>Each level has its own colour scale</b> - shading is not comparable ",
+  "between them<br>",
+  "Click map to view/download the food plants taxa list for that area"))
+
+# ---- A. merged 2-or-more-sources ------------------------------------ #
+merged_2plus_payload <- merge_payloads(
+  rekey_payload(l3_payload, COMBINED_LAYER, LYR_L3),
+  rekey_payload(list(areaNames = as.list(l4_area_names), areaCodes = AREA_CODES_L4,
+                     headers = l4_payload$headers[COMBINED_LAYER],
+                     layers  = l4_payload$layers[COMBINED_LAYER],
+                     dlOnly  = l4_payload$dlOnly[COMBINED_LAYER]),
+                COMBINED_LAYER, LYR_L4))
+
+build_eqearth_map(
+  layers = list(
+    ee_layer(ee_l3, LYR_L3, pal = l3_richness_pal, name_col = "LEVEL3_NAM",
+             weight = 1.3,
+             popup_vec = popup_stub(LYR_L3, ee_l3$LEVEL3_COD, ee_l3$LEVEL3_NAM,
+                                    !is.na(ee_l3$richness))),
+    ee_layer(ee_l4, LYR_L4, pal = l4_richness_pal, name_col = "Level_4_Na",
+             weight = 1.3,
+             popup_vec = popup_stub(LYR_L4, ee_l4$Level4_cod, ee_l4$Level_4_Na,
+                                    !is.na(ee_l4$richness)))),
+  title_html = merged_tdwg_title, hint_html = merged_tdwg_hint,
+  legend_html = build_redlist_legends(
+    c(LYR_L3, LYR_L4), list(l3_richness_pal, l4_richness_pal),
+    list(l3_legend_breaks, l4_legend_breaks)),
+  source_strip = ee_strip_l3, payload = merged_2plus_payload,
+  onrender_js = tdwg_multi_onrender_js,
+  base_groups = c(LYR_L3, LYR_L4),
+  hidden_groups = LYR_L4, default_group = LYR_L3,
+  out_name = "map_food-plants_distributions_by-L3-L4_2-or-more-sources.html",
+  lib_name = "lib_tmp_ee_l3l4")
+
+# ---- B. merged by-data-source ---------------------------------------- #
+# Eight mutually exclusive layers: each of the four sources at each of the two
+# resolutions. The suffix is what keeps the payload keys apart.
+bs_l3_names <- paste0(bs_layer_names, " · L3")
+bs_l4_names <- paste0(bs_layer_names, " · L4")
+
+merged_bs_payload <- merge_payloads(
+  rekey_payload(by_source_l3_payload, bs_layer_names, bs_l3_names),
+  rekey_payload(by_source_l4_payload, bs_layer_names, bs_l4_names))
+
+merged_bs_layers <- c(
+  lapply(seq_along(bs_layer_names), function(i) {
+    d <- list(ee_l3_occ, ee_l3_grin, ee_l3_wcfp, ee_l3_comb)[[i]]
+    ee_layer(d, bs_l3_names[i], pal = by_source_l3_pal, name_col = "LEVEL3_NAM",
+             weight = 1.3,
+             popup_vec = popup_stub(bs_l3_names[i], d$LEVEL3_COD, d$LEVEL3_NAM,
+                                    !is.na(d$richness)))
+  }),
+  lapply(seq_along(bs_layer_names), function(i) {
+    d <- list(ee_l4_occ, ee_l4_grin, ee_l4_wcfp, ee_l4_comb)[[i]]
+    ee_layer(d, bs_l4_names[i], pal = by_source_l4_pal, name_col = "Level_4_Na",
+             weight = 1.3,
+             popup_vec = popup_stub(bs_l4_names[i], d$Level4_cod, d$Level_4_Na,
+                                    !is.na(d$richness)))
+  }))
+
+build_eqearth_map(
+  layers = merged_bs_layers,
+  title_html = merged_tdwg_title,
+  hint_html = build_click_hint(paste0(
+    "Select one data source at one TDWG resolution - layers are exclusive, ",
+    "not stacked<br><b>The two resolutions have different colour scales</b>",
+    "<br>Click map to view/download the taxa list for that area and source")),
+  legend_html = build_redlist_legends(
+    c(bs_l3_names, bs_l4_names),
+    c(rep(list(by_source_l3_pal), 4), rep(list(by_source_l4_pal), 4)),
+    c(rep(list(by_source_l3_legend_breaks), 4),
+      rep(list(by_source_l4_legend_breaks), 4))),
+  source_strip = ee_strip_l3, payload = merged_bs_payload,
+  onrender_js = tdwg_multi_onrender_js,
+  base_groups = c(bs_l3_names, bs_l4_names),
+  hidden_groups = c(bs_l3_names[-4], bs_l4_names),
+  default_group = bs_l3_names[4],
+  out_name = "map_food-plants_distributions_by-L3-L4_by-data-source.html",
+  lib_name = "lib_tmp_ee_bs_l3l4")
+
+message("Merged L3+L4 maps written to: ", equal_earth_output_dir)
+
+message("Equal Earth maps written to: ", equal_earth_output_dir)
+
+
+## ============================================================================ ##
+## STATIC MAPS
+##
+## Static counterparts of the interactive maps: one per spatial unit - country,
+## TDWG level 3, TDWG level 4 - each showing the same thing the interactive
+## `..._2-or-more-sources` maps show, taxa confirmed by >=2 of the 3 data
+## sources. One shaded layer per figure, nothing toggleable.
+##
+## Built here, at the end, rather than beside each level's section, because
+## these three have to agree with each other: same projection, same palette,
+## same legend, same page size. Three copies of the theme in three places is
+## how they drift.
+##
+## PROJECTION: genuine Equal Earth (EPSG:8857), via project_equal_earth().
+## ggplot reprojects properly, so unlike leaflet it needs no scale-and-relabel
+## workaround, and unlike the old 4326 figures these are equal-area - the same
+## reason the Web Mercator maps were dropped.
+##
+## PALETTE: YlGn, the palette the interactive maps use, so a reader moving
+## between the HTML and the figures sees one colour scheme. Alternatives are
+## rendered into colour_scheme_options/ for picking a different one; they are
+## PNG only, since they exist to be looked at rather than placed in a document.
+## Author: Sarah Gora
+## ============================================================================ ##
+
+STATIC_TITLE     <- "Global geographic distribution of food plant taxa"
+STATIC_PALETTE   <- "YlGn"                                    # as the HTML maps
+STATIC_ALT_PALS  <- c("magma", "viridis", "plasma", "cividis")  # all colourblind-safe
+STATIC_W         <- 12
+STATIC_H         <- 7
+
+# The legend and the scale bar are one stacked group in the lower left: a
+# VERTICAL colour bar with the scale bar centred underneath it.
+#
+# They are placed by two different mechanisms - ggplot positions the legend in
+# panel fractions, while the scale bar is drawn with annotate() in projected
+# metres - so they are given the same horizontal CENTRE and static_scale_bar()
+# converts it into data units. The legend also uses centre justification, so
+# STATIC_LEGEND_X really is its middle and not its left edge.
+STATIC_LEGEND_X <- 0.105   # panel fraction: horizontal centre of BOTH
+STATIC_LEGEND_Y <- 0.155   # panel fraction: bottom edge of the legend box
+STATIC_SCALE_Y  <- 0.055   # panel fraction: bottom edge of the scale bar
+
+palette_options_dir <- file.path(output_dir, "colour_scheme_options")
+if (!dir.exists(palette_options_dir)) dir.create(palette_options_dir, recursive = TRUE)
+
+# Graticule in true Equal Earth. ee_graticule further up is the scaled and
+# relabelled one leaflet needs; this one keeps real 8857 coordinates so it lines
+# up with polygons projected the same way.
+ee_graticule_true <- st_transform(
+  st_graticule(lat = seq(-90, 90, 30), lon = seq(-180, 180, 30)), EE_CRS)
+
+# YlGn comes from RColorBrewer, the viridis options from viridis - different
+# ggplot scale functions, same arguments otherwise.
+static_fill_scale <- function(palette) {
+  common <- list(na.value = "grey93", name = "Number of food plant taxa",
+                 labels = scales::comma)
+  if (palette %in% rownames(RColorBrewer::brewer.pal.info))
+    do.call(scale_fill_distiller, c(list(palette = palette, direction = 1), common))
+  else
+    do.call(scale_fill_viridis_c, c(list(option = palette, direction = -1), common))
+}
+
+## Scale bar, drawn in the projection's own units.
+##
+## EPSG:8857 is in METRES, so a bar of km*1000 map units is a real distance.
+## But Equal Earth is equal-AREA, not conformal: linear scale varies with
+## latitude, so on a whole-world map no single bar is exactly right everywhere.
+## It is therefore labelled approximate and placed low, where the stretching is
+## least, rather than being quietly presented as exact.
+##
+## Two-tone, filled then hollow, which reads as a scale bar at a glance without
+## needing a caption to say what it is.
+## The extent ggplot will actually draw, which is the union of every layer -
+## NOT the data alone. The graticule reaches the poles while the polygons stop
+## near 55S, so measuring fractions against the data bbox puts the scale bar
+## roughly a tenth of the page too high, straight under the legend.
+panel_bbox <- function(...) {
+  bs <- lapply(list(...), st_bbox)
+  g  <- function(k, f) f(vapply(bs, function(b) b[[k]], numeric(1)))
+  c(xmin = g("xmin", min), ymin = g("ymin", min),
+    xmax = g("xmax", max), ymax = g("ymax", max))
+}
+
+## `x_frac` is the CENTRE of the bar, not its left end, so it can share a
+## horizontal position with the legend sitting above it. `bb` is the PANEL
+## extent from panel_bbox(), in the same fractions ggplot uses to place the
+## legend - that is what keeps the two aligned.
+static_scale_bar <- function(bb, km = 4000, x_frac = STATIC_LEGEND_X,
+                             y_frac = STATIC_SCALE_Y, txt = 3.0) {
+  L  <- km * 1000
+  w  <- bb[["xmax"]] - bb[["xmin"]]
+  h  <- bb[["ymax"]] - bb[["ymin"]]
+  x0 <- bb[["xmin"]] + w * x_frac - L / 2
+  y0 <- bb[["ymin"]] + h * y_frac
+  bh <- h * 0.011
+  list(
+    annotate("rect", xmin = x0, xmax = x0 + L / 2, ymin = y0, ymax = y0 + bh,
+             fill = "grey15", colour = "grey15", linewidth = 0.25),
+    annotate("rect", xmin = x0 + L / 2, xmax = x0 + L, ymin = y0, ymax = y0 + bh,
+             fill = "white", colour = "grey15", linewidth = 0.25),
+    annotate("text", x = x0,         y = y0 + bh * 2.6, label = "0",
+             size = txt, colour = "grey15"),
+    annotate("text", x = x0 + L / 2, y = y0 + bh * 2.6, label = scales::comma(km / 2),
+             size = txt, colour = "grey15"),
+    annotate("text", x = x0 + L,     y = y0 + bh * 2.6,
+             label = paste0(scales::comma(km), " km"), size = txt, colour = "grey15"),
+    annotate("text", x = x0 + L / 2, y = y0 - bh * 1.9,
+             label = "approx. · scale varies with latitude",
+             size = txt * 0.85, colour = "grey45", fontface = "italic")
   )
+}
 
-l3_png_path <- file.path(output_dir, "WCFP_taxa_distribution_L3area_map_v1_simple.png")
-ragg::agg_png(l3_png_path, width = 12, height = 7, units = "in", res = 300)
-print(p_l3)
-dev.off()
-message("Static L3 PNG saved to: ", l3_png_path)
+## One figure. `sf_obj` must carry a `richness` column; areas with none are
+## drawn in the NA colour rather than left blank, so "no taxa confirmed" and
+## "not part of the map" stay visually distinct.
+build_static_map <- function(sf_obj, subtitle, out_stem, palette = STATIC_PALETTE,
+                             dir = output_dir, pdf = TRUE, tag = "") {
+  d <- project_equal_earth(sf_obj, paste0("static/", out_stem))
 
-l3_pdf_path <- file.path(output_dir, "WCFP_taxa_distribution_L3area_map_v1_simple.pdf")
-ggsave(
-  filename = l3_pdf_path,
-  plot     = p_l3,
-  width    = 12,
-  height   = 7,
-  device   = cairo_pdf,
-  bg       = "white"
+  p <- ggplot() +
+    geom_sf(data = ee_graticule_true, colour = "grey88", linewidth = 0.2) +
+    geom_sf(data = d, aes(fill = richness), colour = "grey45", linewidth = 0.07) +
+    static_scale_bar(panel_bbox(d, ee_graticule_true)) +
+    static_fill_scale(palette) +
+    coord_sf(crs = st_crs(EE_CRS), datum = NA, expand = FALSE) +
+    labs(title = STATIC_TITLE, subtitle = subtitle) +
+    theme(
+      # Tight against the top edge. ggplot's defaults leave a half-line above
+      # the title and another below it, which on a 7-inch figure is a visible
+      # band of nothing before the map starts.
+      plot.margin   = margin(t = 2, r = 5.5, b = 5.5, l = 5.5),
+      plot.title    = element_text(size = 16, face = "bold", colour = "black",
+                                   margin = margin(t = 0, b = 1)),
+      plot.subtitle = element_text(size = 10, colour = "grey20",
+                                   margin = margin(t = 0, b = 2)),
+      plot.background  = element_rect(fill = "white", colour = NA),
+      panel.background = element_rect(fill = "white", colour = NA),
+      panel.grid   = element_blank(),
+      axis.title   = element_blank(),
+      axis.text    = element_blank(),
+      axis.ticks   = element_blank(),
+      # ggplot2 >= 3.5 takes inside placement as "inside" + a separate
+      # coordinate; the old legend.position = c(x, y) form is gone.
+      # Justification (0.5, 0) means the coordinate is the box's bottom CENTRE,
+      # which is what lets the scale bar below share the same x.
+      legend.position        = "inside",
+      legend.position.inside = c(STATIC_LEGEND_X, STATIC_LEGEND_Y),
+      legend.justification   = c(0.5, 0),
+      legend.direction       = "vertical",
+      legend.title.position  = "top",
+      legend.title      = element_text(size = 9, colour = "black"),
+      legend.text       = element_text(size = 8, colour = "black"),
+      legend.background = element_rect(fill = "white", colour = "black",
+                                       linewidth = 0.3),
+      legend.margin     = margin(3, 6, 3, 6)
+    ) +
+    # The BAR is sized here, in the guide's own theme. Setting
+    # legend.key.width in the plot theme instead sizes each gradient SEGMENT,
+    # which rendered the bar about four times too wide.
+    guides(fill = guide_colourbar(
+      frame.colour = "black", frame.linewidth = 0.3, ticks.colour = "black",
+      theme = theme(legend.key.width  = grid::unit(0.32, "cm"),
+                    legend.key.height = grid::unit(2.6, "cm"))))
+
+  png_path <- file.path(dir, paste0("figure_", out_stem, tag, ".png"))
+  ragg::agg_png(png_path, width = STATIC_W, height = STATIC_H, units = "in", res = 300)
+  print(p)
+  dev.off()
+  message("Static map saved to: ", png_path)
+
+  if (pdf) {
+    pdf_path <- file.path(dir, paste0("figure_", out_stem, tag, ".pdf"))
+    ggsave(filename = pdf_path, plot = p, width = STATIC_W, height = STATIC_H,
+           device = cairo_pdf, bg = "white")
+    message("Static map saved to: ", pdf_path)
+  }
+  invisible(png_path)
+}
+
+# The three units, in the same order the workflow derives them. `map_data`,
+# `map_data_l3` and `map_data_l4` are the same objects the interactive
+# 2-or-more-sources maps draw.
+static_map_defs <- list(
+  list(data = map_data, stem = "food-plants_distributions_by-country_2-or-more-sources",
+       subtitle = sprintf(
+         "%s taxa across %s countries · confirmed in ≥2 of 3 data sources",
+         scales::comma(n_distinct(combined_confirmed$taxon)),
+         scales::comma(length(qualifying_countries)))),
+  list(data = map_data_l3, stem = "food-plants_distributions_by-L3_2-or-more-sources",
+       subtitle = sprintf(
+         "%s taxa across %s TDWG Level-3 botanical countries · confirmed in ≥2 of 3 data sources",
+         scales::comma(n_distinct(combined_confirmed_l3$taxon)),
+         scales::comma(n_l3_areas_covered))),
+  list(data = map_data_l4, stem = "food-plants_distributions_by-L4_2-or-more-sources",
+       subtitle = sprintf(
+         "%s taxa across %s TDWG Level-4 botanical areas · confirmed in ≥2 of 3 data sources",
+         scales::comma(n_distinct(combined_confirmed_l4$taxon)),
+         scales::comma(n_l4_covered)))
 )
-message("Static L3 PDF saved to: ", l3_pdf_path)
+
+for (s in static_map_defs)
+  build_static_map(s$data, s$subtitle, s$stem)
+
+# The same three maps in the alternative palettes, for choosing a scheme. PNG
+# only, and suffixed with the palette name so they cannot be confused with the
+# figures above.
+for (pal in STATIC_ALT_PALS)
+  for (s in static_map_defs)
+    build_static_map(s$data, s$subtitle, s$stem, palette = pal,
+                     dir = palette_options_dir, pdf = FALSE,
+                     tag = paste0("_", pal))
+
+message("Static maps written to: ", output_dir)
+message("Colour scheme options written to: ", palette_options_dir)
 
 
 ### end
