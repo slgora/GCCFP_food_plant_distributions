@@ -1,120 +1,44 @@
 ================================================================================
-ABOUT THIS COPY
-================================================================================
-Copied into GCCFP_food_plant_distributions on 2026-09-18 from the project it
-was written in, D:/GCCFP_species_distribution_countries. File paths in the text
-below still refer to THAT project.
-
-ONE SECTION DOES NOT APPLY HERE. Issue 1 ("the outputs on disk are stale, and
-two of them are wrong") describes the parent project, whose outputs predate the
-popup_stub and <i> fixes. This project was created after both fixes, so its
-very first run already contains them. Issue 1 is kept for the explanation of
-what the two bugs were and how they were found - both are worth knowing, since
-each was silent and neither produced an error.
-
-Everything else applies to this project unchanged: the same code, the same
-input data, the same open data-quality caveats.
-
-================================================================================
 WCFP SPATIAL DISTRIBUTION WORKFLOW - OPEN ISSUES
-Only issues that are NOT yet fixed. Everything already resolved has been moved.
+Only issues that are NOT yet fixed. Everything resolved has been moved to the
+archive.
 ================================================================================
 
-Script    : claude_remote/Spatial_distribution_of_wcfp_taxa_methods.R  (4,082 lines)
-Patch     : claude_remote/patch_plantlist_redlist_2026-09-18.R
-Started   : 2026-09-08
-Updated   : 2026-09-18  (rewritten to list open issues only)
+Project   : D:/GCCFP_food_plant_distributions
+Script    : Spatial_distribution_of_food_taxa_methods.R
+Outputs   : G:/.shortcut-targets-by-id/1s1xfW.../GCCFP/Data and analyses/
+            Food plant distributions/outputs/outputs_<date>
+Started   : 2026-09-08   (in the parent project)
+Updated   : 2026-09-23
 
 FIXED ISSUES ARE NOT GONE, JUST MOVED
-  WORKFLOW_NOTES_ARCHIVE_fixed-issues_to-2026-09-12.txt
-  Read it before "tidying" anything that looks odd in the script. Several
-  non-obvious choices are deliberate and were expensive to arrive at -
-  ENCODING=LATIN1 on level3.shp, the planar s2 fallback on one join, and
-  str_squish() rather than trimws() on GRIN's `state` column (48% of those
-  values are a non-breaking space, not an empty string). The archive explains
-  why each exists. Undoing one silently loses data.
+  WORKFLOW_NOTES_ARCHIVE_fixed-issues.txt
+  Read it before 'tidying' anything that looks odd. Several non-obvious
+  choices are deliberate and were expensive to arrive at - ENCODING=LATIN1 on
+  level3.shp, the planar s2 fallback on one join, str_squish() rather than
+  trimws() on GRIN's `state`, and the two separate reads of level3.shp (one
+  for display names, one for country resolution, which must NOT be unified).
+  Part 11 covers the 2026-09-22/23 work.
 
-ENVIRONMENT FOR A CLEAN RUN
-  R 4.5.3 | sf on GEOS 3.14.1, GDAL 3.12.1, PROJ 9.7.1 | Windows 11, 15.7 GB RAM
-  A full run is ~37 minutes and writes 17 outputs, ~1.1 GB.
+WHAT CHANGED IN THIS PROJECT SINCE THE NOTES WERE COPIED OVER
+  The script was renamed, the Web Mercator maps and the IUCN-threatened map
+  were removed, static figures were rebuilt in Equal Earth, and outputs now
+  go to the shared Drive folder in a dated run folder. Ten interactive maps,
+  four workbooks, three figures plus twelve palette options.
 
-  Launch DETACHED, with the temp directory redirected off C: - see issue 6:
-    $env:TMP = $env:TEMP = $env:TMPDIR = 'D:\Rtemp'
-    Start-Process 'C:\Program Files\R\R-4.5.3\bin\x64\Rscript.exe' <script>
-        -RedirectStandardOutput run.log -RedirectStandardError run.err
-  Do NOT set $ErrorActionPreference = "Stop" around it, and do not use
-  PowerShell's combined `*>` redirect.
-
-  Run from a SNAPSHOT COPY of the script, not the working file. Rscript reads
-  the file incrementally, so editing it mid-run corrupts the run.
-
+  Several items below were written against the PARENT project and its file
+  paths. Where an item still applies, it applies unchanged - the data and the
+  geography resolution are the same.
 
 ================================================================================
-1. THE OUTPUTS ON DISK ARE STALE, AND TWO OF THEM ARE WRONG   [BLOCKING]
-================================================================================
-All 17 outputs date from the run of 2026-09-18 00:01-00:29. That run PREDATES
-a series of source changes made afterwards, two of which fix bugs visible in
-the files now sitting in outputs/. Nothing on disk should be circulated or
-used for figures until the workflow is re-run.
+1. [NO LONGER APPLIES] OUTPUTS STALE, TWO WRONG - PARENT PROJECT ONLY
 
-1a. EVERY POPUP ON THE THREE COMBINED MAPS SHOWS THE SAME AREA
-    Affected, on disk right now:
-      WCFP_taxa_distribution_country_map_interactive.html
-      WCFP_taxa_distribution_L4area_map_interactive.html
-      WCFP_taxa_distribution_L3area_map_interactive.html
-
-    Every polygon's popup opens Alberta's taxa list. Measured in the files:
-
-                        popup stubs   distinct areas
-      country map              235          1          <- broken
-      L4 map                   592          1          <- broken
-      L3 map                   360          1          <- broken
-      by-source country        931        240          ok
-      by-source L4           2,328        607          ok
-      by-source L3           1,423        367          ok
-
-    Cause: ifelse() returns a value shaped like its TEST, not its branches.
-    popup_stub() was called by the three combined maps with a scalar
-    has_data = TRUE, so it returned ONE stub, which leaflet then recycled
-    across every polygon. The by-source and Red List maps pass a vector
-    (!is.na(richness)) and were never affected. Alberta because ABT sorts
-    first at both L3 and L4.
-
-    This predates the 2026-09-18 session - the scalar TRUE was already there -
-    so the 2026-09-12 outputs had it too.
-
-    FIXED IN SOURCE, NOT ON DISK. popup_stub() now recycles has_data, treats
-    NA as no-data, and HARD-STOPS if it ever returns fewer stubs than areas.
-    The stop matters more than the fix: this bug was silent. Maps rendered,
-    popups opened, tables populated - they were just all the same area.
-    Nothing short of opening two popups and comparing would catch it.
-
-1b. THE TITLE-BOX NOTE RENDERS ONE WORD PER LINE
-    Affected on disk: the three combined maps and the three Red List maps.
-
-    The italic line "Distribution of taxa confirmed in >=2 data sources" was
-    marked up with <i>. R's addControl() stamps every control with
-    class="info legend", and rstudio_leaflet.css ships
-        .leaflet .legend i { width:18px; height:18px; display:inline-block;
-                             opacity:0.7; ... }
-    for legend colour swatches. The sentence was forced into an 18x18px
-    inline-block at 70% opacity.
-
-    FIXED IN SOURCE, NOT ON DISK - now a <span style='font-style:italic'>,
-    which that selector does not match. Do not reintroduce <i> anywhere inside
-    a control built by addControl(). The taxon names in popup tables also use
-    <i>, but popups are not inside a .legend container, so they are unaffected.
-
-1c. OTHER SOURCE CHANGES ALSO NOT YET ON DISK
-    Presentational, no correctness impact, but the files will not match the
-    script until a re-run: Authors -> Authority column; "food plant taxa"
-    wording; TDWG Level-3/Level-4 area labels; Red List category split into
-    code + name columns; NE reported as "Not Evaluated"; "Distribution data
-    source" column; exclusive (radio) source and Red List layers; stackable
-    L3/L4 boundary overlays on the two combined choropleths; smaller legend;
-    bold area names on hover; thinner L4 boundary strokes; popups above the
-    legend; the Red List plantlist patch (issue 4).
-
+NO LONGER APPLIES 2026-09-23.
+  This item described the PARENT project. This project was created after
+  both bugs were fixed, and outputs now go to a dated folder on the shared
+  Drive, so no run overwrites another. The two bugs themselves are worth
+  knowing and are recorded in the archive: popup_stub()'s scalar has_data
+  recycling every popup to the first area, and the <i> tag leak.
 
 ================================================================================
 2. ~6% OF OCCURRENCE POINTS FALL IN MORE THAN ONE L4 AREA
@@ -147,76 +71,15 @@ Two consequences that are easy to state wrongly:
 
 
 ================================================================================
-4. THE PLANTLIST WORKING COPY STILL DIVERGES FROM THE PUBLISHED RELEASE
-================================================================================
-The workflow reads inputs/WCFP_plantlist_final_2026-06-02_redlist-patched.xlsx,
-generated by patch_plantlist_redlist_2026-09-18.R from the working copy. That
-working copy is derived from the figshare release WCFP.xlsx - first 33 columns
-identical in name and order, 30 of 33 byte-identical on the 26,622 shared
-WCFP_IDs - plus six name-matching columns the workflow depends on
-(wcfp_name_match is the join key), so the figshare file cannot be read directly.
+4. [RESOLVED] PLANTLIST WORKING COPY DIVERGED FROM THE RELEASE
 
-FIXED by the patch: two taxa assessed on figshare but blank in the working copy,
-which the workflow reads as NE (Not Evaluated):
-    WCFP_ID 25484  Citrus warburgiana   DD
-    WCFP_ID 26317  Sinapis pubescens    LC
-
-STILL OPEN - differences nobody has explained:
-  - 10 taxa present in the working copy and absent from the figshare release
-    (Hilliardiella elaeagnoides, Cucumis humofructus, Opuntia monacanthos,
-    Echinochloa colonum, Vitis davidi, V. giradiana, Fragaria moupiensis,
-    Quercus conferta, Citrus warburgina, Rhamphospermum pubescens).
-    Note "Citrus warburgina" here vs "Citrus warburgiana" at WCFP_ID 25484 -
-    the two may be tangled in a name revision.
-  - 2 completely blank rows (WCFP_ID NA), which also make WCFP_ID non-unique.
-    Harmless today because downstream filters require a non-NA
-    wcfp_name_match, but they will break any future join keyed on WCFP_ID.
-
-NOT a difference: IUCN_possibly_extinct and IUCN_possibly_extinct_in_the_wild
-are TRUE/FALSE in the working copy and 1/0 on figshare. The cross-tab is
-perfectly diagonal (5 and 3 flagged taxa in both). Storage type only.
-
-The workflow now depends on a LOCALLY GENERATED file. If the plantlist is ever
-replaced, re-run the patch script before the workflow, or the two restored
-categories are silently lost again.
-
-WANTED: READ THE FIGSHARE PLANTLIST DIRECTLY INSTEAD      [DEFERRED 2026-09-18]
-  Preferred end state - the workflow runs off the published release rather
-  than a local derivative, which removes this whole issue.
-
-  NOT a drop-in swap. The figshare WCFP.xlsx has 33 columns; the working copy
-  has 39, and the workflow depends on some of the six that were added:
-
-      wcfp_name_match        ~50 references   THE JOIN KEY for all three
-                                              methods - occurrences, GRIN and
-                                              WCVP all key on it
-      genus_species            6 references   GRIN name matching, for records
-                                              whose name does not match
-                                              wcfp_name_match directly
-                                              (mostly hybrids, where
-                                              wcfp_name_match carries the "x")
-      check                    4 references
-      taxa                    unclear         a raw grep says ~95, but the
-                                              script also creates its OWN
-                                              `taxa` column for the popups and
-                                              workbooks, so that count is
-                                              almost certainly inflated. Needs
-                                              checking properly before anyone
-                                              scopes this work.
-      standardized_taxa_WFO    0 references   unused
-      genus_species_WFO        0 references   unused
-
-  So the route is to DERIVE the needed columns from the figshare release, in a
-  prep script, rather than to re-point the read. Before writing that, the
-  question to answer is whether wcfp_name_match and genus_species are
-  reconstructable from taxon_name_accepted by rule - hybrid handling is where
-  that is most likely to break, and a near-miss here silently loses joins
-  rather than erroring.
-
-  Also note the figshare release does NOT contain the 10 extra taxa listed
-  above, so switching to it drops them. Whether that is correct or a
-  regression depends on where those 10 came from - unresolved.
-
+RESOLVED 2026-09-23 - see archive Part 11.
+  The working copy and its patch script are gone. wcfp_plantlist is now
+  derived directly from the figshare WCFP.xlsx, with the six name-matching
+  columns computed in the script. All 26,622 taxa match exactly.
+  The genus_species derivation strips only the multiplication sign and
+  standalone x / + tokens - a naive [x] strip turned 'oxystachya' into
+  'o ystachya' and silently broke ~1,700 names.
 
 ================================================================================
 5. FRANCE IS INFLATED BY ITS OVERSEAS DEPARTMENTS
@@ -371,17 +234,50 @@ Not yet checked at all: the static PNG/PDF pair beyond the L3 figure.
    scheme - the collapse happens downstream, so the comparable values are still
    available.
 
-3. Switch Method 3 to the paper's precomputed distribution file
+3. Switch Method 3 to the paper's precomputed distribution file   [DONE 2026-09-22]
                                                             [BLOCKED ON 1-2]
      WCFP_2026_data-and-code_figshare_repo/WCFP_distribution_native_introduced.csv
    Deliberately blocked: adopting it before items 1-2 removes the very thing
    those checks compare against.
 
-4. Generalise the workflow to any supplied plantlist         [NOT STARTED]
+4. Generalise the workflow to any supplied plantlist              [DONE 2026-09-22]
    The geography resolution (aliases, state promotion, region and continent
    expansion, polygon folding) is list-independent and carries over unchanged -
    it keys on GRIN geography, not on taxa. The WCFP-specific parts are the name
    matching in item 1 and the WCFP_ID / LSID columns.
+
+
+================================================================================
+12. OPENED BY THE 2026-09-22 / 23 WORK
+================================================================================
+12a. THE TWO STATIC FIGURES HAVE NEVER BEEN INSPECTED AT FULL SIZE.
+     The L3 figure has been rendered and looked at; the country and L4 ones
+     are produced by the same function and have not been. They are the only
+     outputs no automated check examines.
+
+12b. THE MERGED L3+L4 MAPS ARE UNDECIDED.
+     Built alongside the originals so the arrangements can be compared. Ten
+     maps is more than anyone needs - once a preference is settled, one set
+     should be deleted.
+
+12c. NO IUCN VERSION OF THE MERGED MAPS.
+     The merged pair covers 2-or-more-sources and by-data-source only. An
+     IUCN merge needs build_redlist_l3_spec() generalised to level 4, and
+     would produce 14- and 18-layer controls, which may not be usable.
+
+12d. TWO LINES OF DEAD JS.
+     commifyScaleBar() and watchScaleBar() still query Leaflet's own scale
+     control, which no map creates now. Inert, not harmful.
+
+12e. THE WCFP RELEASE SPELLS TURKIYE 'TURKEY' WITH AN UMLAUT.
+     Codepoints 84 252 114 107 101 121. Now visible on the maps, because
+     display names come from the release. L3_NAME_OVERRIDES fixes it in one
+     line if wanted.
+
+12f. OUTPUTS NOW DEPEND ON GOOGLE DRIVE BEING MOUNTED.
+     outputs_root is a Drive shortcut-target path. The script proves it
+     exists and is writable before reading any input, so a missing mount
+     costs seconds rather than an hour.
 
 ================================================================================
 END OF OPEN ISSUES
