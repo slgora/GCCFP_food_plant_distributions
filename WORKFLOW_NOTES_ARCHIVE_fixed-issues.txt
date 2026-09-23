@@ -1,9 +1,55 @@
-﻿================================================================================
+================================================================================
+READ THIS BEFORE 'TIDYING' ANYTHING IN THE SCRIPT
+================================================================================
+This file records issues that are already FIXED. It is kept for one reason:
+several things in the workflow look wrong and are not. They were expensive to
+diagnose, and reverting any of them loses data SILENTLY - no error, no warning,
+just quietly fewer records.
+
+The ones most likely to be 'corrected' by someone tidying up:
+
+  ENCODING=LATIN1 on level3.shp        looks like a mistake next to UTF-8.
+                                       The .dbf is Latin-1 with no .cpg
+                                       sidecar. UTF-8 matches 0 of 5 accented
+                                       area names; LATIN1 matches 5 of 5.
+                                       See issue A.
+
+  str_squish() on GRIN's `state`       trimws() looks equivalent. It is not:
+                                       48% of those values are a NON-BREAKING
+                                       SPACE (U+00A0), which trimws() does not
+                                       strip. Switching would send 107,354 rows
+                                       to state matching, match nothing, and
+                                       silently lose half the GRIN records at
+                                       level 4. See Part 2.
+
+  planar mode on ONE occurrence join   sf_use_s2(FALSE) around a single join
+                                       looks careless. Three level-4 features
+                                       are s2-invalid and neither
+                                       st_make_valid() nor s2_rebuild() repairs
+                                       them. The setting is restored straight
+                                       after. See Part 1 item 2.
+
+  dedicated map panes at z-index 450   look redundant next to draw order. They
+                                       are not: the polygon layers use
+                                       highlightOptions(bringToFront = TRUE),
+                                       so on hover every area would be lifted
+                                       above the boundary outlines and bury
+                                       them permanently. See Part 6.
+
+Two more general lessons from this file, both learned the hard way:
+  - A script that PARSES can still be wrong. Two bugs shipped past a parse
+    check and were only caught at runtime, or by a person looking at a map.
+  - Silent failures look exactly like success. Checking one popup, one cell or
+    one area cannot distinguish 'correct' from 'all identical'. Check two.
+
+================================================================================
+
+================================================================================
 NOTES ON THE WCFP SPATIAL DISTRIBUTION WORKFLOW
 Issues found, fixes applied, and outstanding data-quality caveats
 ================================================================================
 
-Script    : claude_remote/Spatial_distribution_of_wcfp_taxa_methods.R
+Script    : Spatial_distribution_of_food_taxa_methods.R
 Started   : 2026-09-08
 Updated   : 2026-09-12  (Part 10 = Red List maps; Part 1 item 5 = temp dir)
 
@@ -832,6 +878,169 @@ NOT DONE
   carry the browser-unverified caveat at the end of Part 7, and for these
   three that specifically includes the legend-swap behaviour, which is new
   code and has been verified structurally only.
+
+================================================================================
+PART 11 - 2026-09-22 / 23   PROJECTION, MAP SET, AND OUTPUT CHANGES
+================================================================================
+
+All of the below are DONE and verified. Each check named here is a script in
+C:/Users/sarah/OneDrive/Desktop/Testing and can be re-run.
+
+A. WEB MERCATOR MAPS REMOVED ENTIRELY
+   Nine interactive maps and 717 lines deleted. Mercator is not equal-area,
+   which is the wrong projection for a richness map: it inflates high
+   latitudes so much that Greenland reads as comparable to Africa when it is
+   about a fourteenth of it. Only the Equal Earth set (EPSG:8857) remains.
+
+   The statement boundaries were found with R's own parser (srcrefs), not by
+   eye, and the removal script refused to run until every anchor matched
+   exactly once. It caught one ambiguous anchor and stopped.
+
+   WHAT ALMOST BROKE: build_redlist_l3_map() both built the Mercator widget
+   AND recorded, as a side effect, everything the Equal Earth rebuild needed.
+   Deleting the widget would have taken the Equal Earth Red List maps with
+   it. Split into build_redlist_l3_spec(), which only records.
+
+   A follow-on bug, caught by a check and not by the eye: making `projection`
+   a required argument of build_map_source_strip() left map_source_strip_l3
+   calling it with no argument. That would have errored at runtime. It was
+   dead by then and was removed, along with three unused *_map_bounds.
+   Check: _remove_mercator.R, _mercator_removal_verify.R
+
+B. IUCN RED LIST: ORDER, GROUPING AND PER-CATEGORY COLOUR
+   Layers now run in IUCN severity order, EX EW CR EN VU NT LC DD NE, built
+   FROM RL_SEVERITY rather than retyped so the two cannot drift.
+
+   'Threatened' is now CR + EN + VU, which is the IUCN definition. It
+   previously also swept in EX and EW; those are outcomes, not threat
+   categories, and now have their own layers.
+
+   Each layer has its own ramp anchored on the OFFICIAL IUCN category colour
+   (the exact hex appears as a stop in the ramp, asserted, not approximated):
+   black EX, #542344 EW, #D81E05 CR, #FC7F3F EN, #F9E814 VU, #CCE226 NT,
+   #60C659 LC, #D1D1C6 DD. Darker is more taxa, verified by luminance rather
+   than by eye. NE reuses the DD greys and is told apart by a hatch.
+
+   The light end of every ramp is a visible tint, never white: white is the
+   na.color, and on the Extinct layer 'no taxa here' is almost the whole map.
+
+   The IUCN-threatened map was dropped - its threatened layer duplicated the
+   grouped map's.
+
+   CONSEQUENCE WORTH KNOWING: severity order puts Extinct (2 taxa) first, and
+   the first layer is the one a map opens on. An explicit default_layer was
+   added so the maps open on Threatened / Critically Endangered instead of an
+   almost empty world.
+   Check: _redlist_order_check.R, _redlist_palette_check.R
+
+C. HATCHED 'NOT EVALUATED' LAYER
+   Leaflet polygon fills are solid colours, so the hatch is an SVG <pattern>
+   and the layer is drawn twice in one group: graded fill underneath, texture
+   over it. Leaflet re-renders paths on zoom and drops the url() fill, so
+   ee_hatch_js repaints on zoomend/moveend.
+
+   The pattern has TWO strokes, one dark and one light. A single dark hatch
+   was tested first and vanished completely on the dark end of the ramp -
+   which is most of the NE layer, the largest category at 14,521 taxa.
+   Prototyped on a throwaway Leaflet page before being wired in.
+
+D. SCALE BARS
+   The Equal Earth maps previously had NO scale bar, on the grounds that
+   leaflet could not measure them. That was wrong, and the note saying so has
+   been corrected. The geometry is projected to EPSG:8857 (metres) and divided
+   by EE_SCALE, so ONE MAP UNIT IS EXACTLY 100 KM. Leaflet's own control still
+   cannot be used - under L.CRS.Simple it reports map units as metres - so
+   there is a custom control that measures a map unit in screen pixels and
+   rounds down to a 1/2/2.5/5 x 10^n distance. It re-measures on zoom and pan.
+
+   Marked 'approx.': Equal Earth is equal-AREA, not conformal, so linear
+   scale varies with latitude. The static figures carry the same caveat.
+
+E. STATIC FIGURES REBUILT
+   Three figures, one per unit (country, L3, L4), from ONE function instead of
+   two copies of a duplicated theme. Equal Earth, YlGn to match the HTML maps,
+   PNG + PDF. Alternative palettes (magma, viridis, plasma, cividis) render to
+   figures_static_maps/colour_scheme_options/ for choosing a scheme.
+
+   TWO REAL BUGS FOUND BY RENDERING RATHER THAN READING:
+     - the colour bar came out about 4x too wide. In ggplot2 >= 3.5 a
+       PLOT-level legend.key.width sizes each gradient SEGMENT of a colourbar;
+       the bar itself is sized in guide_colourbar(theme = ...).
+     - the scale bar sat under the legend. It was positioned in fractions of
+       the DATA bbox while ggplot places the legend in fractions of the PANEL,
+       and the graticule reaches the poles while the polygons stop near 55S.
+       panel_bbox() now takes the union of every layer, which is what ggplot
+       actually draws.
+
+   Also: the old static code used legend.position = c(x, y), removed in
+   ggplot2 3.5. This project is on 4.0.3.
+
+F. L3 DISPLAY NAMES COME FROM THE WCFP RELEASE
+   level3.shp is the Kew build of WGSRPD Edition 2 and still carries that
+   edition's 2001 political vocabulary. Fifteen areas differ from the WCFP
+   release: Zaire, Swaziland, Czechoslovakia, Yugoslavia, Surinam among them.
+   The release's names are now used for display.
+
+   DELIBERATELY NOT APPLIED to level3_shp in Method 3. That object keys
+   level3_country_map, and manual_country_overrides is written against the
+   WCFP spellings that FAIL to match it. Renaming there would make several
+   overrides unreachable and silently change which countries a taxon is
+   counted in. A check asserts the two reads stay independent.
+
+   Known oddity, left as the release has it: the WCFP file spells Turkiye
+   'Turkey' with an umlaut on the u - codepoints 84 252 114 107 101 121.
+   L3_NAME_OVERRIDES near the level 3 read fixes it in one line if wanted.
+   Check: _l3_name_swap_check.R
+
+G. AREA CODES AND DOWNLOADS
+   Popup titles now carry the area's code in that map's own scheme:
+   India (ISO3: IND), India (L3: IND), Austria (L3-L4: AUT-AU). Held as the
+   finished parenthetical per area, because the L4 map shows two schemes at
+   once - its own areas and the level 3 overlay's.
+
+   The per-country workbook now repeats `country` and `country_iso3` on every
+   row, matching what the L3 and L4 workbooks already did. Both the titles and
+   the workbook read one COUNTRY_ISO3 lookup, so they cannot disagree.
+
+   Popup downloads gained an 'Area code' column, plus columns the on-screen
+   table omits (`dlOnly`): a level 3 area's level 4 sub-areas, and a level 4
+   area's parent level 3 area. Both are long and repeat on every row.
+   Check: _area_codes_check.R, _download_columns_check.R
+
+H. MERGED LEVEL 3 + LEVEL 4 MAPS (new, alongside the originals)
+   Two extra maps under `by-L3-L4` names carry both resolutions as selectable
+   layers. Kept next to the separate by-L3 / by-L4 maps so the arrangements
+   can be compared before either is dropped.
+
+   The trap: both the L3 and the L4 map stub their popups against
+   COMBINED_LAYER, so a naive merge holds one taxa table under that key and
+   serves it for BOTH resolutions - a map that renders perfectly and is
+   simply wrong. rekey_payload() renames the keys and merge_payloads() refuses
+   to overwrite one. Unit-tested on synthetic payloads.
+   Check: _merge_payload_check.R
+
+I. SMALLER THINGS
+   - One type scale (UI_PX_*) across every control box. Two embedded scripts
+     are plain string literals and cannot interpolate, so their sizes are
+     written out and guarded by stopifnot() against the constants.
+   - 'TDWG areas' heading on the L3/L4 layer controls; the heading code is now
+     one parameterised function instead of three near-identical copies.
+   - Download button restyled blue with an inline SVG glyph, inset from the
+     popup edge.
+   - The selectable L3 overlay went from fillOpacity 0.01 (invisible) to 0.16,
+     a neutral slate veil that mutes the L4 choropleth without shifting hues.
+   - Equal Earth maps open 10% wider than the data (EE_ZOOM_OUT).
+   - Antarctica dropped from display only; sub-antarctic islands retained.
+   - Inputs are located by FILENAME (find_input), after the figshare folder
+     was renamed three times and broke fixed paths each time.
+
+J. HOW THE EMBEDDED JAVASCRIPT IS CHECKED
+   R's parse() cannot see inside a string literal. Earlier in this project an
+   unbalanced quote in embedded JS silently killed an entire onRender, which
+   also stopped every popup filling - with no R error. Every JS string the
+   workflow emits is now extracted, served locally and PARSED IN A BROWSER
+   with new Function(). Six strings, all passing.
+   Check: _all_js_check.R
 
 ================================================================================
 END OF NOTES
